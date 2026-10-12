@@ -26,6 +26,11 @@ WIP.
 - A field embedded in a text object (`{@Caption}{Order.No}`) is now formatted with its own stored format instead of the
   locale's system default. `TextRun` gains an optional `format`, decoded from the `FieldFormat` block streamed after
   each embedded-field record (`0xc4`); an integer field with a 0-decimal number slot no longer prints as `63,161.00`.
+- A box that starts in one section and ends in a later one now follows the real layout. It was sized from the design
+  heights of the sections in between, so a frame around growing content (a long memo, one row per record) stopped short.
+  It is now closed where its end section prints, at its stored bottom edge within that section. When a page break comes
+  first it runs to the bottom of the page body and continues at the top of the next page, unless the box is set to close
+  at page breaks.
 
 ## [0.4.0]
 
