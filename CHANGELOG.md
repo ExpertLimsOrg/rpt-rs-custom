@@ -46,6 +46,9 @@ WIP.
 
 - `rpt-render --paper <size>` prints on an explicit paper size (`a3`, `a4`, `a5`, `b4`, `b5`, `letter`, `legal`, `tabloid`,
   `ledger`, `executive`, `statement`, `folio`) instead of the one the report stores.
+- `rpt-render --selection <formula>` narrows the records a report shows with a Crystal-syntax record-selection formula,
+  ANDed with the report's own. Against a live database the translatable part is pushed into the `WHERE`. An invalid
+  formula is refused before anything is fetched.
 
 ### Changed
 

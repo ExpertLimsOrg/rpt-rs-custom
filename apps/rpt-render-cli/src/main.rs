@@ -166,6 +166,12 @@ DATASOURCE (default: the report's saved data if present, else empty):
                            Add -v for a line per face with its path; add --system-fonts to list the
                            host's library instead of the bundled one.
 
+SELECTION:
+        --selection <formula>  narrow the records the report shows with a Crystal-syntax record-selection
+                           formula, e.g. --selection '{Orders.Year} = 2024 and {Orders.Qty} <> 0'. It is
+                           ANDed with the selection the report stores, if any. With --db, the part that
+                           translates to SQL is pushed into the WHERE; the rest is applied per row.
+
 PARAMETERS:
     -p, --param Name=Value report parameter (see `rpt inputs <file>`). Repeatable; repeat the same
                            name for a multi-value parameter. Values are coerced to the declared type.
@@ -390,6 +396,49 @@ fn with_paper(
     report
 }
 
+/// A `--selection` value, checked as Crystal syntax up front: a formula that does not parse would
+/// otherwise fail on every record and silently drop them all.
+fn check_selection(formula: &str) -> Result<String, String> {
+    let formula = formula.trim();
+    if formula.is_empty() {
+        return Err("--selection: the formula is empty".to_string());
+    }
+    let (_, diagnostics) = rpt_formula::parse(formula, rpt_formula::Syntax::Crystal);
+    match diagnostics.first() {
+        None => Ok(formula.to_string()),
+        Some(d) => Err(format!(
+            "--selection: not a valid Crystal formula: {}",
+            d.message
+        )),
+    }
+}
+
+/// `selection` ANDed onto `stored` (or standing alone when there is none).
+fn and_selection(
+    stored: Option<rpt_reader::model::Formula>,
+    selection: &str,
+) -> Option<rpt_reader::model::Formula> {
+    let combined = match stored.map(|f| f.0).filter(|f| !f.trim().is_empty()) {
+        Some(stored) => format!("({stored}) and ({selection})"),
+        None => selection.to_string(),
+    };
+    Some(rpt_reader::model::Formula(combined))
+}
+
+/// `report` with `selection` ANDed onto its record-selection formula, which a live fetch (`--db`) and the
+/// per-record filter read, and onto its saved-data selection, the local filter the engine applies to rows
+/// that were already selected when they were saved (embedded saved data). One change covers both sources.
+fn with_selection(
+    report: &rpt_reader::model::Report,
+    selection: &str,
+) -> rpt_reader::model::Report {
+    let mut report = report.clone();
+    let dd = &mut report.data_definition;
+    dd.record_selection = and_selection(dd.record_selection.take(), selection);
+    dd.saved_data_filter = and_selection(dd.saved_data_filter.take(), selection);
+    report
+}
+
 /// The parsed command line.
 struct Cli {
     input: String,
@@ -398,6 +447,8 @@ struct Cli {
     locale: Option<String>,
     /// `--paper <size>`: override the report's paper size.
     paper: Option<rpt_reader::model::PaperSize>,
+    /// `--selection <formula>`: an extra record-selection formula, ANDed with the report's own.
+    selection: Option<String>,
     output: Option<String>,
     level: Level,
 
@@ -623,6 +674,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Cli>, String>
     let mut params: Vec<(String, String)> = Vec::new();
     let mut locale: Option<String> = None;
     let mut paper: Option<rpt_reader::model::PaperSize> = None;
+    let mut selection: Option<String> = None;
     let mut output: Option<String> = None;
     let mut verbose = false;
     let mut quiet = false;
@@ -661,6 +713,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Cli>, String>
             }
             "--locale" => locale = Some(take("--locale")?),
             "--paper" => paper = Some(parse_paper(&take("--paper")?)?),
+            "--selection" => selection = Some(check_selection(&take("--selection")?)?),
             "--system-fonts" => system_fonts = true,
             "--pdfa" => pdfa = Some(parse_pdfa(&take("--pdfa")?)?),
             "--pdfua" => pdfua = true,
@@ -740,6 +793,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Cli>, String>
         params,
         locale,
         paper,
+        selection,
         output,
         level,
         list_sources,
@@ -757,13 +811,19 @@ fn run(cli: &Cli, log: &Log) -> Result<(), RenderError> {
 
     // Open + decode.
     let rpt = rpt_reader::Rpt::open(&cli.input)?;
-    let paper_report;
-    let report = match cli.paper {
-        Some(paper) => {
-            paper_report = with_paper(rpt.report(), paper);
-            &paper_report
+    let mut derived_report;
+    let report = if cli.paper.is_some() || cli.selection.is_some() {
+        let mut derived = rpt.report().clone();
+        if let Some(paper) = cli.paper {
+            derived = with_paper(&derived, paper);
         }
-        None => rpt.report(),
+        if let Some(selection) = &cli.selection {
+            derived = with_selection(&derived, selection);
+        }
+        derived_report = derived;
+        &derived_report
+    } else {
+        rpt.report()
     };
 
     // An unrecognized record becomes a default rather than an error, so an incomplete decode would
@@ -1258,6 +1318,53 @@ mod tests {
         let landscape = with_paper(&report, P::PaperA4);
         assert_eq!(landscape.print_options.content_width, Twips(16838 - 720));
         assert_eq!(landscape.print_options.content_height, Twips(11906 - 720));
+    }
+
+    /// `--selection` is checked as Crystal syntax when the command line is parsed.
+    #[test]
+    fn selection_option_must_be_a_valid_formula() {
+        assert_eq!(
+            cli(&["r.rpt", "--selection", " {t.x} = 1 and {t.y} <> 0 "])
+                .selection
+                .as_deref(),
+            Some("{t.x} = 1 and {t.y} <> 0")
+        );
+        assert_eq!(cli(&["r.rpt"]).selection, None);
+        for bad in ["", "   ", "{t.x} = ("] {
+            let args = ["r.rpt", "--selection", bad];
+            assert!(
+                parse_args(args.iter().map(|s| s.to_string())).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    /// The selection stands alone on a report with none, and is ANDed onto one that has its own.
+    #[test]
+    fn selection_is_anded_with_the_reports_own() {
+        use rpt_reader::model::{Formula, Report};
+        let mut report = Report::default();
+        let alone = with_selection(&report, "{t.x} = 1");
+        assert_eq!(
+            alone.data_definition.record_selection,
+            Some(Formula("{t.x} = 1".into()))
+        );
+        report.data_definition.record_selection = Some(Formula("{t.y} > 5".into()));
+        let both = with_selection(&report, "{t.x} = 1");
+        assert_eq!(
+            both.data_definition.record_selection,
+            Some(Formula("({t.y} > 5) and ({t.x} = 1)".into()))
+        );
+        // Embedded saved data is filtered by the saved-data selection instead, so it gets it too.
+        assert_eq!(
+            both.data_definition.saved_data_filter,
+            Some(Formula("{t.x} = 1".into()))
+        );
+        // The original report is untouched.
+        assert_eq!(
+            report.data_definition.record_selection,
+            Some(Formula("{t.y} > 5".into()))
+        );
     }
 
     /// `--version` reports the version the binary was compiled from, and the `--help` header carries
