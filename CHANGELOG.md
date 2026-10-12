@@ -14,6 +14,11 @@ WIP.
   `1` that SQLite stores and SQL Server's `bit` casts to — and Access/ODBC's `-1` — read as false, and a formula such as
   `if {Invoice.HideTimeCode} then …` never saw a set flag. `true`/`t`/`yes`/`y` (any case) and any non-zero number are
   true; everything else is false, as before.
+- `rpt-query`: a table that is the target of several links (a lookup keyed from two tables) now gets all of them in
+  its join's `ON`, not only the one that placed it. The report stores both links, but only the first was used, so
+  `LEFT JOIN Prices ON Invoice.FirmID = Prices.FirmID` also matched every other customer's price row for the firm and
+  duplicated the detail lines. Only forward links into the table, from tables placed before it, are added; a link in
+  the other direction, or between two already-placed tables, stays out of the `ON` as before.
 
 ## [0.4.0]
 
