@@ -33,6 +33,9 @@ WIP.
   at page breaks.
   A box whose end section is suppressed ends where that section would have printed instead of reserving its design
   height (the `Top5USA_piechart` PDF baseline changes accordingly).
+- A suppressed page footer no longer reserves room at the bottom of the page body. Its design height was held back
+  whether or not it printed, so content pinned to the bottom of the page (a footer with "Print at Bottom of Page") sat
+  that much too high.
 
 ## [0.4.0]
 
