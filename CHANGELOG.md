@@ -31,7 +31,7 @@ WIP.
   It is now closed where its end section prints, at its stored bottom edge within that section. When a page break comes
   first it runs to the bottom of the page body and continues at the top of the next page, unless the box is set to close
   at page breaks.
-  A box whose end section is suppressed ends where that section would have printed instead of reserving its design
+- A box whose end section is suppressed ends where that section would have printed instead of reserving its design
   height (the `Top5USA_piechart` PDF baseline changes accordingly).
 - A suppressed page footer no longer reserves room at the bottom of the page body. Its design height was held back
   whether or not it printed, so content pinned to the bottom of the page (a footer with "Print at Bottom of Page") sat
@@ -41,6 +41,17 @@ WIP.
   footer, each following the previous from there. Only the section-level flag was read before, so a footer block that
   Crystal places at the bottom of the page printed directly under the last detail row. The block's height is the sum of
   the sections' design heights, a block never splits across pages, and never rises above the cursor.
+
+### Added
+
+- `rpt-render --paper <size>` prints on an explicit paper size (`a3`, `a4`, `a5`, `b4`, `b5`, `letter`, `legal`, `tabloid`,
+  `ledger`, `executive`, `statement`, `folio`) instead of the one the report stores.
+
+### Changed
+
+- A report that stores no paper size (the printer's default) is now laid out on the locale's default paper: US Letter
+  under a North American locale (`en-US`, `en-CA`, `es-MX`), A4 under any other. It was always Letter before. A report
+  that stores its paper, and any render under `en-US`, is unchanged.
 
 ## [0.4.0]
 
