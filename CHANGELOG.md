@@ -36,6 +36,11 @@ WIP.
 - A suppressed page footer no longer reserves room at the bottom of the page body. Its design height was held back
   whether or not it printed, so content pinned to the bottom of the page (a footer with "Print at Bottom of Page") sat
   that much too high.
+- "Print at Bottom of Page" stored on a group-footer or report-footer **area** (rather than on one of its sections) is
+  now honoured: the area's sections print as one block pinned against the bottom of the page body, above the page
+  footer, each following the previous from there. Only the section-level flag was read before, so a footer block that
+  Crystal places at the bottom of the page printed directly under the last detail row. The block's height is the sum of
+  the sections' design heights, a block never splits across pages, and never rises above the cursor.
 
 ## [0.4.0]
 
