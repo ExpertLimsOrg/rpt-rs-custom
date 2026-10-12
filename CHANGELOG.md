@@ -19,6 +19,10 @@ WIP.
   `LEFT JOIN Prices ON Invoice.FirmID = Prices.FirmID` also matched every other customer's price row for the firm and
   duplicated the detail lines. Only forward links into the table, from tables placed before it, are added; a link in
   the other direction, or between two already-placed tables, stays out of the `ON` as before.
+- A bare numeric `ToText`/`CStr` (one that names no separators) now prints with the render locale's decimal and
+  thousands separators instead of always using the en-US pair, so a formula-built string such as `CStr({Line.Price})`
+  matches the formatted fields (`1 323,00` under `nb-NO`). `EvalContext` gains `number_separators()`; the render path
+  supplies the locale's through the formula registry.
 
 ## [0.4.0]
 
