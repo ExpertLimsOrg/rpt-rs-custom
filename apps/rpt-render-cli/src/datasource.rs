@@ -12,8 +12,8 @@
 //!
 //! ## Driver abstraction
 //! [`Driver`] recognizes all the intended backends (postgres, mysql, mariadb, sqlite, mssql), chosen
-//! by the connection URL's scheme. Postgres and SQLite are implemented; the rest return a clear
-//! "recognized but not available in this build" error.
+//! by the connection URL's scheme. Postgres, SQLite, and (with `db-mssql`) SQL Server are
+//! implemented; MySQL/MariaDB return a clear "recognized but not available in this build" error.
 
 #[cfg(feature = "db")]
 use crate::applog::Comp;
@@ -189,7 +189,7 @@ pub enum Driver {
 impl Driver {
     /// Select the backend from a connection URL's scheme (the universal `DATABASE_URL` convention:
     /// `postgres://…`, `mysql://…`, `sqlite://…`). Recognizes every intended backend even though
-    /// only [`Postgres`](Driver::Postgres) is implemented.
+    /// only backends compiled into this binary are implemented.
     pub fn from_url(url: &str) -> Result<Driver, RenderError> {
         let scheme = match url.split_once("://") {
             Some((s, _)) if !s.is_empty() => s.to_ascii_lowercase(),
@@ -225,9 +225,13 @@ impl Driver {
     /// opposed to implemented-but-not-compiled-in for this build.
     fn recognized_unimplemented(self) -> bool {
         match self {
-            // Postgres + SQLite are implemented (behind the db-postgres / db-sqlite features).
+            // Implemented when the matching `db-*` feature is on (see `fetch_scope`).
             Driver::Postgres | Driver::Sqlite => false,
-            Driver::MySql | Driver::MariaDb | Driver::MsSql => true,
+            #[cfg(feature = "db-mssql")]
+            Driver::MsSql => false,
+            #[cfg(not(feature = "db-mssql"))]
+            Driver::MsSql => true,
+            Driver::MySql | Driver::MariaDb => true,
         }
     }
 }
@@ -238,7 +242,7 @@ pub fn not_implemented(driver: Driver) -> String {
     if driver.recognized_unimplemented() {
         format!(
             "the {} driver is recognized but not available in this build; \
-             postgres and sqlite are implemented",
+             postgres, sqlite, and mssql are implemented when their features are enabled",
             driver.name()
         )
     } else {
@@ -439,6 +443,8 @@ pub fn fetch_scope(
         Driver::Postgres => fetch_scope_postgres(database, inputs, url, log, comment),
         #[cfg(feature = "db-sqlite")]
         Driver::Sqlite => fetch_scope_sqlite(database, inputs, url, log, comment),
+        #[cfg(feature = "db-mssql")]
+        Driver::MsSql => fetch_scope_mssql(database, inputs, url, log, comment),
         // A driver whose backend feature is not compiled in (or has no implementation yet).
         other => Err(RenderError::Datasource(not_implemented(*other))),
     };
@@ -614,6 +620,92 @@ fn fetch_scope_sqlite(
     );
     let t1 = Instant::now();
     let source = conn.run(&query)?;
+    log.info(
+        Comp::Data,
+        format!(
+            "[query {qid}] fetched {} row(s) in {} ms",
+            source.rows().len(),
+            t1.elapsed().as_millis()
+        ),
+    );
+    Ok(Box::new(source))
+}
+
+/// Fetch a scope's rows from Microsoft SQL Server (`mssql://` / `sqlserver://`). The MSSQL dialect
+/// does not push record selection into `WHERE`; the pipeline applies the formula per row (same as
+/// SQLite).
+#[cfg(feature = "db-mssql")]
+fn fetch_scope_mssql(
+    database: &rpt_reader::model::Database,
+    inputs: &FetchInputs,
+    url: &str,
+    log: &crate::applog::Log,
+    comment: Option<&str>,
+) -> Result<Box<dyn rpt_data::RowSource>, RenderError> {
+    use rpt_data::RowSource;
+    use rpt_db_mssql::MssqlConn;
+    use rpt_query::{build_query_full, Dialect};
+    use std::time::Instant;
+
+    let param_pairs: Vec<(String, rpt_query::Value)> = inputs
+        .params
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let mut query = build_query_full(
+        database,
+        inputs.sql_exprs,
+        inputs.selection,
+        &param_pairs,
+        Dialect::Mssql,
+    )
+    .map_err(|e| RenderError::Datasource(e.to_string()))?;
+    if let Some(c) = comment {
+        query = query.with_comment(c);
+    }
+    let qid = log.next_query_id();
+    let t0 = Instant::now();
+    log.info(
+        Comp::Data,
+        "connecting to SQL Server (blocks until the server responds)…",
+    );
+    let mut conn = MssqlConn::connect(url)?;
+    conn.ping().map_err(|e| {
+        let err: RenderError = e.into();
+        match err {
+            RenderError::Db { context, source, hint } => RenderError::Db {
+                context: format!("{context} (healthcheck SELECT 1 failed)"),
+                source,
+                hint,
+            },
+            other => other,
+        }
+    })?;
+    let ping_ms = t0.elapsed().as_millis();
+    if let Some(ver) = conn.server_version() {
+        log.info(
+            Comp::Data,
+            format!("healthcheck OK: SQL Server ({ping_ms} ms) — {ver}"),
+        );
+    } else {
+        log.info(
+            Comp::Data,
+            format!("healthcheck OK: SQL Server ({ping_ms} ms)"),
+        );
+    }
+    log_query(qid, &query, inputs.selection, log);
+    log.info(
+        Comp::Data,
+        format!(
+            "[query {qid}] executing SQL query ({} column(s) across {} table(s)) — waiting for the \
+             server; this blocks until every row is returned",
+            query.columns.len(),
+            database.tables.len(),
+        ),
+    );
+
+    let t1 = Instant::now();
+    let source = conn.run(&query, database)?;
     log.info(
         Comp::Data,
         format!(
@@ -855,9 +947,15 @@ mod tests {
     #[cfg(feature = "db")]
     #[test]
     fn unimplemented_drivers_are_recognized_but_unavailable() {
-        // Postgres + SQLite are implemented; the rest are recognized but not yet available.
         assert!(not_implemented(Driver::MySql).contains("recognized but not available"));
+        #[cfg(not(feature = "db-mssql"))]
         assert!(not_implemented(Driver::MsSql).contains("recognized but not available"));
+        #[cfg(feature = "db-mssql")]
+        assert!(
+            !not_implemented(Driver::MsSql).contains("recognized but not available"),
+            "mssql is implemented when db-mssql is on: {:?}",
+            not_implemented(Driver::MsSql)
+        );
     }
 
     /// Every driver hands the query builder the whole [`FetchInputs`] bundle and lets the dialect

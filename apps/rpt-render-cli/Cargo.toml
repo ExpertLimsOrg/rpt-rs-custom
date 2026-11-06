@@ -27,6 +27,7 @@ thiserror = { workspace = true }
 rpt-query = { workspace = true, optional = true }
 rpt-db-postgres = { workspace = true, optional = true }
 rpt-db-sqlite = { workspace = true, optional = true }
+rpt-db-mssql = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Drives the built binary against a committed fixture (flag plumbing, refusals, and CLI-vs-library
@@ -37,12 +38,13 @@ rpt-test-support = { workspace = true }
 # The `db-*` features compile the CLI's live-DB backends and the driver-error `From` impls on the
 # CLI's own `RenderError`. Text layout is not a build knob: the font-accurate stack is always compiled,
 # because a build that silently paginates differently is not one worth shipping.
-default = ["db-postgres", "db-sqlite"]
+default = ["db-postgres", "db-sqlite", "db-mssql"]
 # `db` is the driver-agnostic live-DB machinery (URL/scheme parsing, fetch/scope plumbing); each
 # concrete driver feature turns it on plus its backend crate.
 db = ["dep:rpt-query"]
 db-postgres = ["db", "dep:rpt-db-postgres"]
 db-sqlite = ["db", "dep:rpt-db-sqlite"]
+db-mssql = ["db", "dep:rpt-db-mssql"]
 
 [lints]
 workspace = true

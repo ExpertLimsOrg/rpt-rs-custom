@@ -10,7 +10,9 @@
 //! text-casts, and joins are dialect-correct; the DB driver (native-only) consumes the string it
 //! returns.
 //!
-//! Dialects: Postgres / SQLite / MySQL, via sea-query's per-dialect builders. Author-written
+//! Dialects: Postgres / SQLite / MySQL via sea-query's per-dialect builders; Microsoft SQL Server is
+//! emitted by the hand-rolled [`build_sql_raw`] path (casts to `nvarchar(max)`, bracket identifiers)
+//! because sea-query 0.32 does not ship an MSSQL backend. Author-written
 //! command tables (Crystal SQL Commands) are passed through **verbatim** and cannot be expressed as
 //! a structured sea-query source, so a report containing one is rendered by the hand-rolled string
 //! path instead; fully-structured reports use sea-query.
@@ -148,6 +150,10 @@ pub enum Dialect {
     Sqlite,
     /// MySQL/MariaDB (`CAST(x AS CHAR)` casts, `` `…` `` quoting).
     Mysql,
+    /// Microsoft SQL Server (`CAST(x AS nvarchar(max))`, `[…]` bracket quoting). The builder uses the
+    /// hand-rolled SQL path for every report (structured and command-table); record-selection predicates
+    /// are not pushed to `WHERE` (same trade-off as SQLite).
+    Mssql,
 }
 
 impl Dialect {
@@ -159,14 +165,17 @@ impl Dialect {
             Dialect::Postgres => format!("{expr}::text"),
             Dialect::Sqlite => format!("CAST({expr} AS TEXT)"),
             Dialect::Mysql => format!("CAST({expr} AS CHAR)"),
+            Dialect::Mssql => format!("CAST({expr} AS nvarchar(max))"),
         }
     }
 
     /// Quote a SQL identifier for this dialect, escaping the embedded quote character by doubling it.
-    /// MySQL uses backticks (`` `…` ``); every other dialect uses ANSI double quotes (`"…"`).
+    /// MySQL uses backticks (`` `…` ``); SQL Server uses brackets (`[…]`, `]` → `]]`); every other
+    /// dialect uses ANSI double quotes (`"…"`).
     pub(crate) fn quote_ident(self, ident: &str) -> String {
         match self {
             Dialect::Mysql => format!("`{}`", ident.replace('`', "``")),
+            Dialect::Mssql => format!("[{}]", ident.replace(']', "]]")),
             _ => format!("\"{}\"", ident.replace('"', "\"\"")),
         }
     }
@@ -189,6 +198,13 @@ fn cast_expr(dialect: Dialect, alias: &str, field: &str) -> SimpleExpr {
         Dialect::Postgres => Expr::cust_with_expr("$1::text", colref),
         Dialect::Sqlite => colref.cast_as(Alias::new("TEXT")),
         Dialect::Mysql => colref.cast_as(Alias::new("CHAR")),
+        Dialect::Mssql => {
+            let q = format!(
+                "CAST({} AS nvarchar(max))",
+                dialect.qualify(alias, field)
+            );
+            Expr::cust(q)
+        }
     }
 }
 
@@ -201,6 +217,7 @@ fn cast_raw_expr(dialect: Dialect, raw: &str) -> SimpleExpr {
         Dialect::Postgres => Expr::cust_with_expr("$1::text", inner),
         Dialect::Sqlite => inner.cast_as(Alias::new("TEXT")),
         Dialect::Mysql => inner.cast_as(Alias::new("CHAR")),
+        Dialect::Mssql => Expr::cust(format!("CAST(({raw}) AS nvarchar(max))")),
     }
 }
 
@@ -319,7 +336,9 @@ pub fn build_query_full(
         .iter()
         .any(|ti| is_command_table(&database.tables[*ti]));
 
-    let sql = if has_command {
+    // sea-query 0.32 has no MSSQL backend; the hand-rolled path emits T-SQL (bracket identifiers,
+    // `CAST(... AS nvarchar(max))`, `1=1` for unconstrained joins).
+    let sql = if has_command || dialect == Dialect::Mssql {
         build_sql_raw(database, &order, &columns, dialect, where_sql.as_deref())
     } else {
         build_sql_seaquery(database, &order, &columns, dialect, where_sql.as_deref())
@@ -410,7 +429,11 @@ fn build_sql_seaquery(
                     JoinType::Join,
                     Alias::new(&t.name),
                     Alias::new(&t.alias),
-                    Expr::cust("TRUE"),
+                    Expr::cust(if dialect == Dialect::Mssql {
+                        "1=1"
+                    } else {
+                        "TRUE"
+                    }),
                 );
             }
         }
@@ -424,6 +447,9 @@ fn build_sql_seaquery(
         Dialect::Postgres => q.to_string(PostgresQueryBuilder),
         Dialect::Sqlite => q.to_string(SqliteQueryBuilder),
         Dialect::Mysql => q.to_string(MysqlQueryBuilder),
+        Dialect::Mssql => {
+            unreachable!("MSSQL uses build_sql_raw only; sea-query has no SqlServer builder in 0.32")
+        }
     }
 }
 
@@ -729,8 +755,12 @@ fn join_clause(
         })
         .collect();
     let on = if conds.is_empty() {
-        // A link with no field pairs can't constrain — emit a TRUE so the SQL stays valid.
-        "TRUE".to_string()
+        // A link with no field pairs can't constrain — emit a true expression so the SQL stays valid.
+        if dialect == Dialect::Mssql {
+            "1=1".to_string()
+        } else {
+            "TRUE".to_string()
+        }
     } else {
         conds.join(" AND ")
     };
@@ -1081,6 +1111,15 @@ mod tests {
     }
 
     #[test]
+    fn mssql_snapshot_uses_brackets_and_nvarchar_max_cast() {
+        let q = build_query_in(&one_table_db(), Dialect::Mssql).unwrap();
+        assert_eq!(
+            q.sql,
+            "SELECT CAST([countries].[id] AS nvarchar(max)), CAST([countries].[name] AS nvarchar(max)) FROM [countries] AS [countries]"
+        );
+    }
+
+    #[test]
     fn sqlite_join_snapshot() {
         let db = Database {
             tables: vec![
@@ -1140,11 +1179,18 @@ mod tests {
         let mut t = table("cmd", &[("v", FieldValueType::Int32s)]);
         t.command_text = Some("SELECT foo FROM bar".into());
         db.tables = vec![t];
-        for d in [Dialect::Postgres, Dialect::Sqlite, Dialect::Mysql] {
+        for d in [
+            Dialect::Postgres,
+            Dialect::Sqlite,
+            Dialect::Mysql,
+            Dialect::Mssql,
+        ] {
             let q = build_query_in(&db, d).unwrap();
-            // The alias is quoted per dialect: backticks for MySQL, ANSI double quotes otherwise.
+            // The alias is quoted per dialect: backticks for MySQL, brackets for MSSQL, ANSI double
+            // quotes otherwise.
             let expected = match d {
                 Dialect::Mysql => "FROM (SELECT foo FROM bar) AS `cmd`",
+                Dialect::Mssql => "FROM (SELECT foo FROM bar) AS [cmd]",
                 _ => r#"FROM (SELECT foo FROM bar) AS "cmd""#,
             };
             assert!(q.sql.contains(expected), "{d:?}: {}", q.sql);

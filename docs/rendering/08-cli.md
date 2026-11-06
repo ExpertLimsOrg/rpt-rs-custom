@@ -95,7 +95,8 @@ history. The URL **scheme** selects the backend:
 |------------------------------------------------------------|---------------------------------|
 | `postgres://` (or `postgresql://`)                         | implemented                     |
 | `sqlite:///path/to/file.db` (or `sqlite::memory:`)         | implemented                     |
-| `mysql://` · `mariadb://` · `mssql://` (or `sqlserver://`) | recognized, not yet implemented |
+| `mssql://` (or `sqlserver://`)                             | implemented (TLS; optional `?trustServerCertificate=true`) |
+| `mysql://` · `mariadb://`                                  | recognized, not yet implemented |
 
 For a single-server report, set `RPT_DB_URL` (or the 12-factor `DATABASE_URL` fallback; `RPT_DB_URL` takes precedence).
 A report plus its subreports can read from more than one server; each distinct server gets its own

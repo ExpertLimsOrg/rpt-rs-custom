@@ -42,7 +42,9 @@
 //!
 //! - `postgres://` (or `postgresql://`) — implemented.
 //! - `sqlite:///path/to/file.db` (or `sqlite::memory:`) — implemented.
-//! - `mysql://`, `mariadb://`, `mssql://`/`sqlserver://` — recognized but not yet implemented.
+//! - `mysql://`, `mariadb://` — recognized but not yet implemented.
+//! - `mssql://` / `sqlserver://` — implemented (native TDS; TLS; add `?trustServerCertificate=true` for
+//!   self-signed certs).
 //!
 //! A single-server report reads `RPT_DB_URL`, falling back to `DATABASE_URL`. A report that spans
 //! multiple servers (via subreports) needs one URL per distinct server in `RPT_DB_URL_<SERVER>`,
@@ -268,7 +270,7 @@ DATABASE CONFIGURATION (--db):
         mysql://user:password@host:port/dbname                             [not yet]
         mariadb://user:password@host:port/dbname                           [not yet]
         sqlite:///path/to/file.db  (or sqlite::memory:)                    [implemented]
-        mssql://user:password@host:port/dbname        (or sqlserver://)    [not yet]
+        mssql://user:password@host:port/dbname        (or sqlserver://)    [implemented]
 
     Examples (RPT_DB_URL takes precedence; DATABASE_URL is the fallback — use either):
 
@@ -280,8 +282,8 @@ DATABASE CONFIGURATION (--db):
         export DATABASE_URL='postgres://rpt:secret@db.internal:5432/sales'
         rpt-render report.rpt --db -o out.pdf
 
-    postgres and sqlite are implemented; mysql, mariadb, and mssql are recognized (the scheme is
-    understood) but not yet implemented.
+    postgres, sqlite, and mssql/sqlserver are implemented; mysql and mariadb are recognized (the scheme
+    is understood) but not yet implemented.
 
     MULTIPLE CONNECTIONS:
         A report (with its subreports) can read from more than one server. Each distinct SERVER gets

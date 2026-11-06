@@ -111,6 +111,17 @@ impl From<rpt_db_sqlite::DbError> for RenderError {
     }
 }
 
+#[cfg(feature = "db-mssql")]
+impl From<rpt_db_mssql::DbError> for RenderError {
+    fn from(e: rpt_db_mssql::DbError) -> RenderError {
+        RenderError::Db {
+            context: "database error".to_string(),
+            hint: e.hint(),
+            source: Box::new(e),
+        }
+    }
+}
+
 /// Render `err` and its whole `source()` chain as one line — `top: cause: root-cause` — so the
 /// underlying I/O / driver error surfaces instead of being hidden behind the top-level message.
 ///
