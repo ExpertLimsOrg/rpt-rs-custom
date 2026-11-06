@@ -54,8 +54,8 @@ cargo build --release
 ```
 
 The two binaries you want land in `target/release/`: `rpt` (inspect/export) and `rpt-render` (render). Or skip Rust
-entirely and build the [Docker image](docs/project/building.md#docker), which contains nothing but those two binaries,
-statically linked.
+entirely and build the [Docker image](docs/project/building.md#docker), which ships those two binaries on a minimal
+Debian slim base with CA certificates and OpenSSL (needed for TLS to databases, including SQL Server).
 
 ## Usage
 

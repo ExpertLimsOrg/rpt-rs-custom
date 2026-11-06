@@ -47,9 +47,9 @@ as two font databases disagreeing.
 
 ## Docker
 
-A multistage build produces a `scratch` image containing the two statically linked binaries and, under
-`/usr/local/share/licenses/rpt-rs/`, the `LICENSE` and `THIRD-PARTY-NOTICES.md` the image redistributes on their
-behalf (there is no shell to read them with — extract them with `docker cp`):
+A multistage build produces a minimal **Debian bookworm slim** image with the two release binaries, CA certificates, and
+OpenSSL runtime libraries (`libssl3`) so TLS to live databases works (Postgres over TLS, SQL Server via `mssql://`, etc.).
+The image also carries `LICENSE` and `THIRD-PARTY-NOTICES.md` under `/usr/local/share/licenses/rpt-rs/`.
 
 ```sh
 docker build -t rpt-rs .

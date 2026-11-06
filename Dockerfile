@@ -1,47 +1,42 @@
 # syntax=docker/dockerfile:1
 
-# Build stage: compile fully static musl binaries.
+# Multistage build: `rpt` and `rpt-render` linked against glibc + OpenSSL.
 #
-# Pinned to the crate's MSRV; combined with the committed Cargo.lock this makes
-# the build reproducible (same compiler + same dependency versions).
+# The SQL Server driver (`tiberius` / native-tls) needs OpenSSL on Linux. A fully static `scratch`
+# musl image cannot satisfy that without a large vendored-OpenSSL setup; this image ships a small
+# runtime with CA certificates and `libssl3` instead.
 #
-# Targets x86_64 musl so the binaries are statically linked and depend on no
-# system libraries — letting the final image be `scratch` (just the binaries).
+# Pinned to the workspace MSRV; with the committed Cargo.lock the build is reproducible.
 FROM rust:1.92-slim-bookworm AS builder
 WORKDIR /src
 
-RUN rustup target add x86_64-unknown-linux-musl
-
-# The SQLite driver bundles C, so a musl C toolchain is required despite the rest
-# of the tree being pure Rust. `cc` looks for the target-prefixed name first.
-RUN apt-get update && apt-get install -y --no-install-recommends musl-tools \
+# `libsqlite3-sys` compiles C; `openssl-sys` (via native-tls / MSSQL) links OpenSSL.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
 
-# Build with cached cargo registry and target directories for fast rebuilds. The
-# target dir is a cache mount (not persisted in the layer), so copy the finished
-# binaries out to /out where the final stage can pick them up.
+# Cache mounts speed rebuilds; binaries land in /out for the runtime stage.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --target x86_64-unknown-linux-musl -p rpt-cli -p rpt-render-cli \
+    cargo build --release -p rpt-cli -p rpt-render-cli \
     && mkdir -p /out \
-    && cp target/x86_64-unknown-linux-musl/release/rpt \
-          target/x86_64-unknown-linux-musl/release/rpt-render /out/
+    && cp target/release/rpt target/release/rpt-render /out/
 
-# Runtime stage: nothing but the binaries.
-FROM scratch AS runtime
+FROM debian:bookworm-slim AS runtime
 
-# Static binaries, so no libc, shell, or package manager is needed.
+# TLS to DB servers (postgres with TLS, `mssql://` with native-tls).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 10001 --system --no-create-home --shell /usr/sbin/nologin rpt
+
 COPY --from=builder /out/rpt /out/rpt-render /usr/local/bin/
 
-# The binaries link every dependency and embed the bundled fonts, so the image redistributes them
-# and owes their notices. `scratch` has no shell to read these with — they are here so that whoever
-# redistributes the image can extract them (`docker cp`) and satisfy the same conditions.
 COPY --from=builder /src/LICENSE /src/THIRD-PARTY-NOTICES.md /usr/local/share/licenses/rpt-rs/
 
-# MPL-2.0 §3.2(a) asks that a recipient of the executable form be told how to obtain the source. The
-# image carries no README to say so, so the label says it.
 LABEL org.opencontainers.image.source="https://github.com/MrSrsen/rpt-rs" \
       org.opencontainers.image.licenses="MPL-2.0"
 
@@ -49,9 +44,6 @@ ENV PATH=/usr/local/bin
 WORKDIR /data
 USER 10001:10001
 
-# `rpt` is the inspection/export CLI; `rpt-render` renders a report. Override the
-# command to run either, e.g.:
-#   docker run --rm -v "$PWD:/data" IMAGE rpt inspect report.rpt
-#   docker run --rm -v "$PWD:/data" IMAGE rpt json-dump report.rpt out.json
-#   docker run --rm -v "$PWD:/data" IMAGE rpt-render report.rpt -o out.pdf
+# Mount reports here, e.g. `docker run --rm -v "$PWD:/data" IMAGE rpt-render report.rpt --db -o out.pdf`
+# Live DB URL must come from the environment (RPT_DB_URL or DATABASE_URL).
 CMD ["rpt", "--help"]
