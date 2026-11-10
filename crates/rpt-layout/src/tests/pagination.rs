@@ -1398,3 +1398,59 @@ fn a_group_carried_over_a_page_break_counts_against_the_next_page_cap() {
         "group B's remaining rows and the whole of group C"
     );
 }
+
+#[test]
+fn page_header_honors_section_visibility_formula() {
+    let mut always_hidden = section(
+        AreaSectionKind::PageHeader,
+        "HiddenLogo",
+        400,
+        vec![text_object("Hide", "HIDDEN_LOGO", 0)],
+    );
+    always_hidden.condition_formulas =
+        vec![("Section_Visibility".into(), "WhilePrintingRecords;\ntrue".into())];
+    let visible = section(
+        AreaSectionKind::PageHeader,
+        "VisibleLogo",
+        400,
+        vec![text_object("Show", "VISIBLE_LOGO", 0)],
+    );
+    let mut report = Report::default();
+    report.print_options.content_width = Twips(12240);
+    report.print_options.content_height = Twips(15840);
+    report.report_definition.areas = vec![
+        area(
+            AreaSectionKind::PageHeader,
+            vec![always_hidden, visible],
+        ),
+        area(
+            AreaSectionKind::Detail,
+            vec![section(
+                AreaSectionKind::Detail,
+                "Details",
+                300,
+                vec![text_object("Row", "row", 0)],
+            )],
+        ),
+    ];
+    let saved = saved_data(&[("t.x", FieldValueType::Number)], &[&["1"]]);
+    let ds = build_dataset(&SavedDataSource::new(&saved), &report.data_definition);
+    let formulas = rpt_data::compile_formulas(&report.data_definition);
+    let doc = layout(&report, &ds, &formulas);
+    let texts: Vec<&str> = doc.pages[0]
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            DrawOp::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !texts.iter().any(|t| *t == "HIDDEN_LOGO"),
+        "suppressed page-header section must not render: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| *t == "VISIBLE_LOGO"),
+        "visible page-header section must render: {texts:?}"
+    );
+}

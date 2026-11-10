@@ -4,6 +4,7 @@
 //! live database query. [`SavedDataSource`] reads the stored rows `rpt-reader` decodes; the
 //! live-DB backends (`rpt-db-postgres`, `rpt-db-sqlite`) implement the same trait natively.
 
+use crate::Parameters;
 use rpt_formula::eval::{Date, Time, Value};
 use rpt_model::{FieldValueType, Report, SavedData};
 use std::collections::BTreeMap;
@@ -218,13 +219,17 @@ impl RowSource for EmptySource {
 /// that subreport's saved data. With no provider, every subreport renders from saved data.
 ///
 /// ```
-/// use rpt_data::{Column, Row, RowSource, ScopeData};
+/// use rpt_data::{Column, Parameters, Row, RowSource, ScopeData};
 /// use rpt_model::Report;
 ///
 /// struct LiveScope;
 ///
 /// impl ScopeData for LiveScope {
-///     fn rows_for(&self, report: &Report) -> Option<Box<dyn RowSource>> {
+///     fn rows_for_with_params(
+///         &self,
+///         report: &Report,
+///         _params: &Parameters,
+///     ) -> Option<Box<dyn RowSource>> {
 ///         // Key a fetch off the scope's tables/connection; `None` falls back to saved data.
 ///         if report.database.tables.is_empty() {
 ///             return None;
@@ -241,7 +246,17 @@ impl RowSource for EmptySource {
 pub trait ScopeData {
     /// Rows for this report scope's tables, or `None` to fall back to the scope's saved data (e.g.
     /// the scope has no live tables, or a fetch failed non-fatally).
-    fn rows_for(&self, report: &Report) -> Option<Box<dyn RowSource>>;
+    fn rows_for(&self, report: &Report) -> Option<Box<dyn RowSource>> {
+        self.rows_for_with_params(report, &Parameters::new())
+    }
+
+    /// Like [`rows_for`](Self::rows_for) but binds `params` into the live query (record-selection
+    /// push-down and stored SQL command substitution).
+    fn rows_for_with_params(
+        &self,
+        report: &Report,
+        params: &Parameters,
+    ) -> Option<Box<dyn RowSource>>;
 }
 
 /// A [`RowSource`] over a report's stored saved data (the offline, no-DB path).

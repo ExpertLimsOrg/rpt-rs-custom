@@ -775,7 +775,11 @@ pub struct LiveScopeData<'a> {
 
 #[cfg(feature = "db")]
 impl rpt_data::ScopeData for LiveScopeData<'_> {
-    fn rows_for(&self, report: &Report) -> Option<Box<dyn rpt_data::RowSource>> {
+    fn rows_for_with_params(
+        &self,
+        report: &Report,
+        scope_params: &rpt_data::Parameters,
+    ) -> Option<Box<dyn rpt_data::RowSource>> {
         // Only fetch scopes that actually have live tables; others keep their saved data.
         let server_key = scope_server_key(&report.database)?;
         let selection = report
@@ -789,12 +793,8 @@ impl rpt_data::ScopeData for LiveScopeData<'_> {
             .sql_expression_fields()
             .map(|(f, x)| (f.name.clone(), x.text.clone()))
             .collect();
-        // Cache key: the fetch is fully determined by the scope's server, record-selection, SQL
-        // Expression fields, and table graph — none of which vary across the instances of one
-        // subreport (the parent link is applied in-memory after the fetch, never in the WHERE), so
-        // every instance issues the identical query. Params are render-fixed and so constant here.
-        // Over-keying (e.g. on an unused declared table) only ever causes a fresh fetch, never wrong
-        // rows, so a coarse structural fingerprint of the database is a safe key.
+        // Cache key: scope server, record-selection, SQL expressions, table graph, and the parameter
+        // values bound into the live query (subreport link params + report params for `{?…}`).
         let key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -802,6 +802,12 @@ impl rpt_data::ScopeData for LiveScopeData<'_> {
             selection.hash(&mut h);
             sql_exprs.hash(&mut h);
             format!("{:?}", report.database).hash(&mut h);
+            let mut pairs: Vec<_> = scope_params.iter().collect();
+            pairs.sort_by(|a, b| a.0.cmp(b.0));
+            for (k, v) in pairs {
+                k.hash(&mut h);
+                format!("{v:?}").hash(&mut h);
+            }
             h.finish()
         };
         if let Some(hit) = self.cache.borrow().get(&key) {
@@ -819,10 +825,13 @@ impl rpt_data::ScopeData for LiveScopeData<'_> {
             format!("subreport:{title}")
         };
         let comment = scope_comment(self.report_label, &scope);
+        let merged: rpt_data::Parameters = self.params.iter().chain(scope_params.iter()).map(
+            |(k, v)| (k.clone(), v.clone()),
+        ).collect();
         let inputs = FetchInputs {
             selection,
             sql_exprs: &sql_exprs,
-            params: self.params,
+            params: &merged,
         };
         match fetch_scope(report, &inputs, self.resolver, self.log, Some(&comment)) {
             Ok(src) => {

@@ -27,7 +27,7 @@
 mod selection;
 mod used_fields;
 
-pub use selection::{push_down_selection_with_params, PushDown};
+pub use selection::{push_down_selection_with_params, substitute_parameter_tokens, PushDown};
 pub use used_fields::{prune_database, used_database_fields};
 
 /// Re-exported so callers can name the parameter-value type used by [`build_query_full`] /
@@ -339,7 +339,14 @@ pub fn build_query_full(
     // sea-query 0.32 has no MSSQL backend; the hand-rolled path emits T-SQL (bracket identifiers,
     // `CAST(... AS nvarchar(max))`, `1=1` for unconstrained joins).
     let sql = if has_command || dialect == Dialect::Mssql {
-        build_sql_raw(database, &order, &columns, dialect, where_sql.as_deref())
+        build_sql_raw(
+            database,
+            &order,
+            &columns,
+            dialect,
+            where_sql.as_deref(),
+            params,
+        )
     } else {
         build_sql_seaquery(database, &order, &columns, dialect, where_sql.as_deref())
     };
@@ -535,6 +542,7 @@ fn build_sql_raw(
     columns: &[QueryColumn],
     dialect: Dialect,
     where_sql: Option<&str>,
+    params: &[(String, Value)],
 ) -> String {
     let tables = &database.tables;
     let select = if columns.is_empty() {
@@ -560,7 +568,7 @@ fn build_sql_raw(
 
     let mut sql = format!(
         "SELECT {select} FROM {}",
-        from_source(&tables[order.placed[0]], dialect)
+        from_source(&tables[order.placed[0]], dialect, params)
     );
     for step in &order.steps {
         sql.push(' ');
@@ -570,10 +578,11 @@ fn build_sql_raw(
                 &database.links[li],
                 step.reversed,
                 dialect,
+                params,
             )),
             None => sql.push_str(&format!(
                 "CROSS JOIN {}",
-                from_source(&tables[step.table], dialect)
+                from_source(&tables[step.table], dialect, params)
             )),
         }
     }
@@ -727,6 +736,7 @@ fn join_clause(
     link: &rpt_model::TableLink,
     reversed: bool,
     dialect: Dialect,
+    params: &[(String, Value)],
 ) -> String {
     let kind = match resolve_join_kind(&link.join_kind, reversed) {
         JoinKind::Inner => "JOIN",
@@ -764,14 +774,15 @@ fn join_clause(
     } else {
         conds.join(" AND ")
     };
-    format!("{kind} {} ON {on}", from_source(new_table, dialect))
+    format!("{kind} {} ON {on}", from_source(new_table, dialect, params))
 }
 
 /// The `FROM`/`JOIN` source for a table: `"name" AS "alias"`, or `(<command sql>) AS "alias"` for a
 /// command table. Identifiers are quoted for `dialect`.
-fn from_source(table: &Table, dialect: Dialect) -> String {
+fn from_source(table: &Table, dialect: Dialect, params: &[(String, Value)]) -> String {
     match &table.command_text {
         Some(cmd) if !cmd.trim().is_empty() => {
+            let cmd = substitute_parameter_tokens(cmd, params);
             format!("({cmd}) AS {}", dialect.quote_ident(&table.alias))
         }
         _ => format!(
@@ -1294,6 +1305,7 @@ mod tests {
             &l,
             false,
             Dialect::Postgres,
+            &[],
         );
         assert!(sql.starts_with("LEFT JOIN"), "{sql}");
         assert!(sql.contains(r#""a"."k" >= "b"."k""#), "{sql}");

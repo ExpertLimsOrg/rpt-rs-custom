@@ -194,7 +194,11 @@ impl<'a> PgScopeData<'a> {
 }
 
 impl rpt_data::ScopeData for PgScopeData<'_> {
-    fn rows_for(&self, report: &rpt_reader::model::Report) -> Option<Box<dyn rpt_data::RowSource>> {
+    fn rows_for_with_params(
+        &self,
+        report: &rpt_reader::model::Report,
+        params: &rpt_data::Parameters,
+    ) -> Option<Box<dyn rpt_data::RowSource>> {
         let sql_exprs: Vec<(String, String)> = report
             .data_definition
             .sql_expression_fields()
@@ -203,11 +207,21 @@ impl rpt_data::ScopeData for PgScopeData<'_> {
         // The fetch is fully determined by the scope's table graph and its SQL Expression fields —
         // neither varies across the instances of one subreport, since the parent link is applied
         // after the fetch. Over-keying only ever costs an extra fetch, never wrong rows.
+        let param_pairs: Vec<(String, rpt_query::Value)> = params
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             format!("{:?}", report.database).hash(&mut h);
             sql_exprs.hash(&mut h);
+            let mut pairs = param_pairs.clone();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            for (k, v) in pairs {
+                k.hash(&mut h);
+                format!("{v:?}").hash(&mut h);
+            }
             h.finish()
         };
         if let Some(hit) = self.cache.borrow().get(&key) {
@@ -218,7 +232,7 @@ impl rpt_data::ScopeData for PgScopeData<'_> {
             report,
             None,
             &sql_exprs,
-            &[],
+            &param_pairs,
         ) {
             Ok(src) => {
                 use rpt_data::RowSource as _;

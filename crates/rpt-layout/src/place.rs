@@ -886,7 +886,9 @@ impl Formatter<'_> {
         let (params, link_filters) = self.subreport_link_bindings(&sr_obj.links);
         // Prefer live rows from the scope-data provider; fall back to the subreport's
         // saved data, then to empty. `live` is held so the boxed source outlives `build_dataset`.
-        let live = self.scope_data.and_then(|p| p.rows_for(sub_report));
+        let live = self
+            .scope_data
+            .and_then(|p| p.rows_for_with_params(sub_report, &params));
         let saved_holder;
         let source: &dyn rpt_data::RowSource = match (&live, &sub_report.saved_data) {
             (Some(src), _) => src.as_ref(),

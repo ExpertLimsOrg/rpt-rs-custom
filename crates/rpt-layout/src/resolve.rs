@@ -412,6 +412,8 @@ pub mod cond {
     pub const OBJECT_VISIBILITY: &str = "Object_Visibility";
     /// Section visibility / suppress flag (`@Section_Visibility`).
     pub const SECTION_VISIBILITY: &str = "Section_Visibility";
+    /// Underlay following sections (`@Underlay_Following_Sections`).
+    pub const UNDERLAY_FOLLOWING: &str = "Underlay_Following_Sections";
     /// A section's own background-fill color, stored under one of several reserved names across
     /// engine versions. All map to the same section-background condition.
     pub const SECTION_BACK_COLORS: &[&str] =
@@ -445,6 +447,34 @@ pub fn cond_color(
 
 /// Evaluate a named conditional-format formula to a boolean (e.g. an object's `EnableSuppress`).
 /// `None` when there is no context, no such formula, or it does not yield a `Bool`.
+/// Whether a section is hidden by its `Section_Visibility` condition (`true` = suppress).
+pub fn section_suppressed(section: &rpt_model::Section, ctx: Option<&DataContext>) -> bool {
+    if section.condition_formulas.is_empty() {
+        return false;
+    }
+    let ctx = match ctx {
+        Some(c) => c,
+        None => return false,
+    };
+    cond_bool(
+        &section.condition_formulas,
+        cond::SECTION_VISIBILITY,
+        Some(ctx),
+    )
+    .unwrap_or(false)
+}
+
+/// Static or conditional underlay (`Underlay_Following_Sections`) on a section.
+pub fn section_underlay(section: &rpt_model::Section, ctx: Option<&DataContext>) -> bool {
+    section.format.underlay_section
+        || cond_bool(
+            &section.condition_formulas,
+            cond::UNDERLAY_FOLLOWING,
+            ctx,
+        )
+        .unwrap_or(false)
+}
+
 pub fn cond_bool(
     conditions: &[(String, String)],
     key: &str,

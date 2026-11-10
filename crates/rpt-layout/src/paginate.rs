@@ -350,21 +350,10 @@ impl<'a> Formatter<'a> {
         if section.format.base.suppress {
             return false;
         }
-        // A Section_Visibility condition suppresses the whole band per record, like the static flag.
-        // Evaluated on a probe context (the incoming record) so a suppressed band forces no page
-        // break and fires no side effects, matching the static path above.
-        if !section.condition_formulas.is_empty() {
-            let empty = Row::default();
-            let probe = self.context(row.unwrap_or(&empty), state);
-            if crate::resolve::cond_bool(
-                &section.condition_formulas,
-                crate::resolve::cond::SECTION_VISIBILITY,
-                Some(&probe),
-            )
-            .unwrap_or(false)
-            {
-                return false;
-            }
+        let empty = Row::default();
+        let probe = self.context(row.unwrap_or(&empty), state);
+        if crate::resolve::section_suppressed(section, Some(&probe)) {
+            return false;
         }
         // NewPageBefore on this band, or a deferred NewPageAfter from the previous band, starts a
         // fresh page — but not when we are already at the top of one (that would leave a blank page).
@@ -426,7 +415,7 @@ impl<'a> Formatter<'a> {
             if pin_bottom {
                 // The band consumed the rest of the page: the next flow band starts a fresh page.
                 self.cursor_y = self.body_bottom;
-            } else if section.format.underlay_section {
+            } else if crate::resolve::section_underlay(section, ctx.as_ref()) {
                 self.open_underlay(origin_y + height, underlay_end);
             } else {
                 self.cursor_y += height;
@@ -509,6 +498,9 @@ impl<'a> Formatter<'a> {
         let rect = self.page_rect(&section.objects[i].bounds, origin_y);
         let chunks = &subs[i].as_ref().expect("subreport at sub_idx").chunks;
         self.place_subreport_flowing(chunks, rect);
+        // The flowing path advances only through the subreport slice; static objects deeper in the
+        // band still reserve the full grown height so the next section does not land on top of them.
+        self.cursor_y = self.cursor_y.max(origin_y + height);
         true
     }
 
@@ -527,6 +519,17 @@ impl<'a> Formatter<'a> {
             .map(|o| self.text_plan(o, ctx, state, allow_grow))
             .collect();
         let mut height = section.height.0;
+        for o in &section.objects {
+            let suppressed = crate::resolve::cond_bool(
+                &o.format.condition_formulas,
+                crate::resolve::cond::OBJECT_VISIBILITY,
+                ctx,
+            )
+            .unwrap_or(o.format.suppress.value);
+            if !suppressed {
+                height = height.max(o.bounds.top.0 + o.bounds.height.0);
+            }
+        }
         for (o, p) in section.objects.iter().zip(&plans) {
             if let Some(p) = p {
                 if o.format.can_grow && p.lines.len() > 1 {
@@ -1033,6 +1036,9 @@ impl<'a> Formatter<'a> {
             }
             let empty = Row::default();
             let ctx = Some(self.context(first.unwrap_or(&empty), &state));
+            if crate::resolve::section_suppressed(s, ctx.as_ref()) {
+                continue;
+            }
             let subs = self.run_band_subreports(s, ctx.as_ref());
             let (plans, text_height) = self.band_plans_and_height(s, ctx.as_ref(), &state, true);
             let height = self.grow_for_subreports(s, &subs, text_height);
@@ -1044,7 +1050,7 @@ impl<'a> Formatter<'a> {
                 // `grow_for_subreports` returns `text_height` and the empty `subs` draws nothing extra.
                 let origin_y = self.cursor_y;
                 self.emit_band_plans(s, &plans, origin_y, height, ctx.as_ref(), &subs, None);
-                if s.format.underlay_section {
+                if crate::resolve::section_underlay(s, ctx.as_ref()) {
                     self.open_underlay(origin_y + height, Some(UnderlayEnd::ReportFooter));
                 } else {
                     self.cursor_y += height;
@@ -1088,13 +1094,16 @@ impl<'a> Formatter<'a> {
         }
         let empty = Row::default();
         let ctx = Some(self.context(row.unwrap_or(&empty), state));
+        if crate::resolve::section_suppressed(section, ctx.as_ref()) {
+            return;
+        }
         let (plans, height) = self.band_plans_and_height(section, ctx.as_ref(), state, allow_grow);
         let origin_y = self.cursor_y;
         self.emit_band_plans(section, &plans, origin_y, height, ctx.as_ref(), &[], None);
         // A page header/footer has no underlay companion that can close the span: the page footer is
         // pinned to the body bottom, so an underlaid page header backs the whole page (see
         // [`Self::open_underlay`]).
-        if section.format.underlay_section {
+        if crate::resolve::section_underlay(section, ctx.as_ref()) {
             self.open_underlay(origin_y + height, None);
         } else {
             self.cursor_y += height;

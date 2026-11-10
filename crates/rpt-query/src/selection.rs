@@ -472,6 +472,40 @@ impl ParamLookup {
     }
 }
 
+/// Replace Crystal parameter tokens (`{?Name}`, `{Name}`) in author SQL with SQL literals from
+/// `params`. Unrecognized tokens are left unchanged.
+pub fn substitute_parameter_tokens(sql: &str, params: &[(String, Value)]) -> String {
+    let lookup = ParamLookup::new(params);
+    let mut out = String::with_capacity(sql.len());
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'{' {
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'{' {
+                i += 1;
+            }
+            out.push_str(&sql[start..i]);
+            continue;
+        }
+        let start = i;
+        let Some(rel_end) = sql[i..].find('}') else {
+            out.push_str(&sql[start..]);
+            break;
+        };
+        let end = i + rel_end;
+        let inner = &sql[i + 1..end];
+        let name = inner.strip_prefix('?').unwrap_or(inner);
+        if let Some(lit) = lookup.resolve(name) {
+            out.push_str(&lit);
+        } else {
+            out.push_str(&sql[start..=end]);
+        }
+        i = end + 1;
+    }
+    out
+}
+
 // Normalize a parameter name for matching (drop surrounding `{}`, a leading `?`, lowercase). Reuses
 // the canonical implementation from `rpt-data` — rpt-query already depends on that crate — so the two
 // can never drift.
@@ -498,6 +532,17 @@ mod tests {
                 expr: None,
             },
         ]
+    }
+
+    #[test]
+    fn substitute_parameter_tokens_replaces_crystal_markers() {
+        let params = vec![(
+            "Pm-GMMuestras.IdMuestra".to_string(),
+            Value::Number(42182.0),
+        )];
+        let sql = "WHERE id = {?Pm-GMMuestras.IdMuestra}";
+        let out = substitute_parameter_tokens(sql, &params);
+        assert_eq!(out, "WHERE id = 42182");
     }
 
     #[test]
