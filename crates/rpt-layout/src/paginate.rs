@@ -343,7 +343,7 @@ impl<'a> Formatter<'a> {
     pub(crate) fn emit_band(
         &mut self,
         section: &Section,
-        row: Option<&Row>,
+        row: Option<&'a Row>,
         state: &ResolveState,
         underlay_end: Option<UnderlayEnd>,
     ) -> bool {
@@ -368,9 +368,11 @@ impl<'a> Formatter<'a> {
         // null against a synthetic empty row.
         let empty = Row::default();
         let ctx = Some(self.context(row.unwrap_or(&empty), state));
+        let prev_host_row = self.subreport_host_row;
+        self.subreport_host_row = row;
         // Format inline subreports once, ahead of pagination, so a subreport taller than its box grows
         // the band (its Shared/Global writes fire here, exactly once — the cache is reused at emit).
-        let subs = self.run_band_subreports(section, ctx.as_ref());
+        let subs = self.run_band_subreports(section, ctx.as_ref(), row);
         // A body band (Detail / Group / Report Header-Footer) is a flow section: can-grow applies.
         // `text_height` is the band's height from its own (non-subreport) content; `height` also fits
         // any inline subreport that lands atomically.
@@ -381,6 +383,7 @@ impl<'a> Formatter<'a> {
         // formulas have already evaluated (above), so their record-time side effects still fire.
         if section.format.suppress_if_blank && self.section_is_blank(section, &plans, ctx.as_ref())
         {
+            self.subreport_host_row = prev_host_row;
             return false;
         }
         // Route to the cross-page-flow path only when an inline subreport can't land atomically on a
@@ -430,6 +433,7 @@ impl<'a> Formatter<'a> {
         if section.format.base.reset_page_number_after {
             self.pending_page_number_reset = true;
         }
+        self.subreport_host_row = prev_host_row;
         true
     }
 
@@ -1039,7 +1043,9 @@ impl<'a> Formatter<'a> {
             if crate::resolve::section_suppressed(s, ctx.as_ref()) {
                 continue;
             }
-            let subs = self.run_band_subreports(s, ctx.as_ref());
+            let prev_host_row = self.subreport_host_row;
+            self.subreport_host_row = first;
+            let subs = self.run_band_subreports(s, ctx.as_ref(), first);
             let (plans, text_height) = self.band_plans_and_height(s, ctx.as_ref(), &state, true);
             let height = self.grow_for_subreports(s, &subs, text_height);
             if !self.try_emit_flowing_subreport(s, &plans, text_height, height, ctx.as_ref(), &subs)
@@ -1056,6 +1062,7 @@ impl<'a> Formatter<'a> {
                     self.cursor_y += height;
                 }
             }
+            self.subreport_host_row = prev_host_row;
         }
         self.in_report_header = false;
         self.emit_page_header();

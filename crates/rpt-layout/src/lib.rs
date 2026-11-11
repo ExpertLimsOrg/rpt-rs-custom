@@ -376,6 +376,10 @@ pub(crate) struct Formatter<'a> {
     /// on a page for the header, the last for the footer) — this tracks that record, updated as each
     /// detail row is emitted. `None` before the first record prints.
     current_row: Option<&'a Row>,
+    /// The host band's record while a flow band (group/report header, detail, …) is formatting or
+    /// emitting inline subreports. Subreport link values are read from here when `current_row` is not
+    /// set (e.g. a group-header band before any detail prints).
+    subreport_host_row: Option<&'a Row>,
     /// Text metrics + line-breaking (default: [`ApproxLayout`]; inject a font-accurate impl for
     /// engine parity and international scripts). Borrowed so nested subreport layouts share it.
     text_layout: &'a dyn TextLayout,
@@ -588,6 +592,7 @@ impl<'a> Formatter<'a> {
             page_number: 0,
             record_number: 0,
             current_row: None,
+            subreport_host_row: None,
             text_layout,
             multi_column: po.multi_column,
             col_offset: 0,

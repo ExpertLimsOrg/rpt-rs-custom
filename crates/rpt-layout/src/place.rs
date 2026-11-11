@@ -11,7 +11,7 @@ use crate::{
 };
 use rpt_data::{
     compile_formulas, compile_formulas_at, normalize_param_name, DataContext, FieldFilter,
-    Parameters, RunningTotals, SavedDataSource,
+    Parameters, Row, RunningTotals, SavedDataSource,
 };
 use rpt_formula::eval::Value;
 use rpt_formula::token::strip_braces;
@@ -639,6 +639,7 @@ impl Formatter<'_> {
         &self,
         section: &Section,
         ctx: Option<&DataContext>,
+        host_row: Option<&Row>,
     ) -> Vec<Option<SubreportRender>> {
         section
             .objects
@@ -659,7 +660,7 @@ impl Formatter<'_> {
                 if suppressed {
                     return None;
                 }
-                self.format_subreport(sr, obj.bounds.height.0, true)
+                self.format_subreport(sr, obj.bounds.height.0, true, host_row)
             })
             .collect()
     }
@@ -718,7 +719,8 @@ impl Formatter<'_> {
             return;
         }
         // Cache miss (fixed / multi-column bands, not grown): format once here and clip to the box.
-        if let Some(render) = self.format_subreport(sr_obj, obj.bounds.height.0, false) {
+        let host_row = self.subreport_host_row.or(self.current_row);
+        if let Some(render) = self.format_subreport(sr_obj, obj.bounds.height.0, false, host_row) {
             if let Some(first) = render.chunks.first() {
                 self.place_subreport_ops(first, rect, Some(rect.height.0));
             }
@@ -873,6 +875,7 @@ impl Formatter<'_> {
         sr_obj: &SubreportObject,
         box_height: i32,
         flow: bool,
+        host_row: Option<&Row>,
     ) -> Option<SubreportRender> {
         let sub = self
             .report
@@ -883,7 +886,8 @@ impl Formatter<'_> {
         // Bind the parent row's link values: parameter-routed links (`linked_parameter`) merge into
         // the subreport's parameters (consumed by its record-selection formula and the WHERE
         // push-down); direct field links become structural equality filters on the fetched rows.
-        let (params, link_filters) = self.subreport_link_bindings(&sr_obj.links);
+        let (params, link_filters) =
+            self.subreport_link_bindings(host_row, &sr_obj.links);
         // Prefer live rows from the scope-data provider; fall back to the subreport's
         // saved data, then to empty. `live` is held so the boxed source outlives `build_dataset`.
         let live = self
@@ -1017,15 +1021,14 @@ impl Formatter<'_> {
     /// subreport field. A link whose parent field is absent from the current row is skipped.
     fn subreport_link_bindings(
         &self,
+        host_row: Option<&Row>,
         links: &[rpt_model::SubreportLink],
     ) -> (Parameters, Vec<FieldFilter>) {
         let mut params = self.dataset.params.clone();
         let mut filters = Vec::new();
+        let row = host_row.or(self.subreport_host_row).or(self.current_row);
         for link in links {
-            let Some(value) = self
-                .current_row
-                .and_then(|r| r.get(strip_braces(&link.main_report_field)))
-            else {
+            let Some(value) = row.and_then(|r| r.get(strip_braces(&link.main_report_field))) else {
                 continue;
             };
             match &link.linked_parameter {

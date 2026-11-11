@@ -605,3 +605,226 @@ fn flowed_subreport_shared_total_runs_once() {
         "the subreport must not run twice (would double the Shared total): {texts:?}"
     );
 }
+
+/// A subreport in a **group header** must read link values from the group's first record, not only from
+/// `current_row` (which is unset before the detail pass). Matches reports like test2 where `DatosCliente`
+/// links `GMMuestras.IdMuestra` → `{?Pm-GMMuestras.IdMuestra}`.
+#[test]
+fn group_header_subreport_receives_linked_parameter_from_first_group_record() {
+    use rpt_model::{Group, Subreport, SubreportLink, SubreportObject};
+
+    // Saved batches are `already_selected`, so per-instance filtering uses direct field links (extra
+    // filters), not `record_selection` with `{?…}` — same parent-row binding path as parameter links.
+    let mut nested = Report::default();
+    nested.report_definition.areas = vec![area(
+        AreaSectionKind::Detail,
+        vec![section(
+            AreaSectionKind::Detail,
+            "SubDet",
+            300,
+            vec![db_field_object("Cap", "sr.caption", 0)],
+        )],
+    )];
+    let sub_saved = saved_data(
+        &[
+            ("sr.id", FieldValueType::Number),
+            ("sr.caption", FieldValueType::String),
+        ],
+        &[&["1", "ROW_ONE"], &["2", "ROW_TWO"]],
+    );
+    nested.saved_data = Some(sub_saved);
+
+    let mut so = SubreportObject::default();
+    so.subreport_name = "Child".into();
+    so.links = vec![SubreportLink {
+        main_report_field: "t.muestra_id".into(),
+        linked_parameter: None,
+        subreport_field: "sr.id".into(),
+    }];
+    let mut sub_obj = ReportObject::default();
+    sub_obj.name = "SubObj".into();
+    sub_obj.bounds = Rect {
+        left: Twips(0),
+        top: Twips(0),
+        width: Twips(6000),
+        height: Twips(400),
+    };
+    sub_obj.kind = ReportObjectKind::Subreport(so);
+
+    let mut report = Report::default();
+    report.print_options.content_width = Twips(12240);
+    report.print_options.content_height = Twips(15840);
+    let mut g = Group::default();
+    g.condition_field = "t.g".into();
+    report.data_definition.groups = vec![g];
+    report.report_definition.areas = vec![
+        group_area(
+            AreaSectionKind::GroupHeader,
+            "GroupHeaderArea1",
+            vec![section(
+                AreaSectionKind::GroupHeader,
+                "GHSub",
+                500,
+                vec![sub_obj],
+            )],
+        ),
+        area(
+            AreaSectionKind::Detail,
+            vec![section(
+                AreaSectionKind::Detail,
+                "Det",
+                300,
+                vec![text_object("R", "detail", 0)],
+            )],
+        ),
+    ];
+    let mut sr = Subreport::default();
+    sr.name = "Child".into();
+    sr.report = Box::new(nested);
+    report.subreports = vec![sr];
+
+    let main_saved = saved_data(
+        &[
+            ("t.g", FieldValueType::String),
+            ("t.muestra_id", FieldValueType::Number),
+        ],
+        &[&["G", "2"], &["G", "2"]],
+    );
+    let ds = build_dataset(
+        &SavedDataSource::new(&main_saved),
+        &report.data_definition,
+    );
+    let formulas = rpt_data::compile_formulas(&report.data_definition);
+    let doc = layout(&report, &ds, &formulas);
+
+    let texts: Vec<&str> = doc
+        .pages
+        .iter()
+        .flat_map(|p| &p.ops)
+        .filter_map(|op| match op {
+            DrawOp::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|t| *t == "ROW_TWO"),
+        "linked parameter from group header row must filter subreport to id=2: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| *t == "ROW_ONE"),
+        "subreport must not show the unlinked row: {texts:?}"
+    );
+}
+
+/// Two consecutive group-header bands reserve their full heights so a subreport in the second band does
+/// not draw over the first (test2 sections 4 + 7).
+#[test]
+fn consecutive_group_header_sections_stack_vertically() {
+    use rpt_model::{Formula, Group, Subreport, SubreportLink, SubreportObject};
+
+    let mut nested = Report::default();
+    nested.data_definition.record_selection =
+        Some(Formula("{sr.id} = {?pid}".to_string()));
+    nested.report_definition.areas = vec![area(
+        AreaSectionKind::Detail,
+        vec![section(
+            AreaSectionKind::Detail,
+            "SubDet",
+            200,
+            vec![text_object("Lbl", "SUBMARK", 0)],
+        )],
+    )];
+    let sub_saved = saved_data(
+        &[("sr.id", FieldValueType::Number)],
+        &[&["1"]],
+    );
+    nested.saved_data = Some(sub_saved);
+
+    let mut so = SubreportObject::default();
+    so.subreport_name = "Child".into();
+    so.links = vec![SubreportLink {
+        main_report_field: "t.muestra_id".into(),
+        linked_parameter: Some("pid".into()),
+        subreport_field: "sr.id".into(),
+    }];
+    let mut sub_obj = ReportObject::default();
+    sub_obj.name = "Sub2".into();
+    sub_obj.bounds = Rect {
+        left: Twips(0),
+        top: Twips(0),
+        width: Twips(6000),
+        height: Twips(200),
+    };
+    sub_obj.kind = ReportObjectKind::Subreport(so);
+
+    const BAND_A_H: i32 = 800;
+    const BAND_B_H: i32 = 400;
+
+    let mut report = Report::default();
+    report.print_options.content_width = Twips(12240);
+    report.print_options.content_height = Twips(15840);
+    let mut g = Group::default();
+    g.condition_field = "t.g".into();
+    report.data_definition.groups = vec![g];
+    report.report_definition.areas = vec![
+        group_area(
+            AreaSectionKind::GroupHeader,
+            "GroupHeaderArea1",
+            vec![
+                section(
+                    AreaSectionKind::GroupHeader,
+                    "GH4",
+                    BAND_A_H,
+                    vec![text_object("A", "MARK_A", 0)],
+                ),
+                section(
+                    AreaSectionKind::GroupHeader,
+                    "GH7",
+                    BAND_B_H,
+                    vec![sub_obj],
+                ),
+            ],
+        ),
+        area(
+            AreaSectionKind::Detail,
+            vec![section(
+                AreaSectionKind::Detail,
+                "Det",
+                300,
+                vec![text_object("R", "detail", 0)],
+            )],
+        ),
+    ];
+    let mut sr = Subreport::default();
+    sr.name = "Child".into();
+    sr.report = Box::new(nested);
+    report.subreports = vec![sr];
+
+    let main_saved = saved_data(
+        &[
+            ("t.g", FieldValueType::String),
+            ("t.muestra_id", FieldValueType::Number),
+        ],
+        &[&["G", "1"]],
+    );
+    let ds = build_dataset(
+        &SavedDataSource::new(&main_saved),
+        &report.data_definition,
+    );
+    let formulas = rpt_data::compile_formulas(&report.data_definition);
+    let doc = layout(&report, &ds, &formulas);
+
+    let pos = |label: &str| -> Option<i32> {
+        doc.pages.iter().flat_map(|p| &p.ops).find_map(|op| match op {
+            DrawOp::Text(t) if t.text == label => Some(t.bounds.top.0),
+            _ => None,
+        })
+    };
+    let a_top = pos("MARK_A").expect("first band text");
+    let b_top = pos("SUBMARK").expect("second band subreport text");
+    assert!(
+        b_top >= a_top + BAND_A_H,
+        "second group-header band must start below the first (got MARK_A top={a_top}, SUBMARK top={b_top}, expected >= {})",
+        a_top + BAND_A_H
+    );
+}
