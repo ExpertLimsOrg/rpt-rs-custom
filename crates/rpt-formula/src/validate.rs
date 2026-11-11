@@ -206,6 +206,11 @@ impl Walker<'_> {
                 }
             }
             NodeKind::Assign { value, .. } => self.visit(value),
+            NodeKind::AssignIndex { base, index, value } => {
+                self.visit(base);
+                self.visit(index);
+                self.visit(value);
+            }
             NodeKind::Declare { init: Some(i), .. } => self.visit(i),
             NodeKind::While { cond, body, .. } => {
                 self.visit(cond);

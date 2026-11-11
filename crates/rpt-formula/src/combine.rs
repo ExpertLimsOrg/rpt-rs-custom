@@ -65,6 +65,9 @@ fn ast_has_error(node: &Node) -> bool {
                 || els.as_ref().is_some_and(|e| ast_has_error(e))
         }
         NodeKind::Assign { value, .. } => ast_has_error(value),
+        NodeKind::AssignIndex { base, index, value } => {
+            ast_has_error(base) || ast_has_error(index) || ast_has_error(value)
+        }
         NodeKind::Declare { init, .. } => init.as_ref().is_some_and(|i| ast_has_error(i)),
         NodeKind::While { cond, body, .. } => ast_has_error(cond) || ast_has_error(body),
         NodeKind::For {

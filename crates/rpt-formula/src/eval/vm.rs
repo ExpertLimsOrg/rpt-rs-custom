@@ -253,6 +253,10 @@ impl Compiler {
                 self.cur_span = span;
                 self.emit(Op::StoreVar(name.to_lowercase()));
             }
+            NodeKind::AssignIndex { .. } => {
+                self.cur_span = span;
+                self.emit(Op::Fail("array element assignment".into()));
+            }
             NodeKind::Declare {
                 scope,
                 kind,

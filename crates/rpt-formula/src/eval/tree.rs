@@ -95,6 +95,9 @@ impl<'c> Evaluator<'c> {
                 self.vars.insert(name.to_lowercase(), v.clone());
                 Ok(v)
             }
+            NodeKind::AssignIndex { .. } => {
+                Err(EvalError::Unsupported("array element assignment".into()))
+            }
             NodeKind::Declare {
                 kind, names, init, ..
             } => self.eval_declare(*kind, names, init.as_deref()),

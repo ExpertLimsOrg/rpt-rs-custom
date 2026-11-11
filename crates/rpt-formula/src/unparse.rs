@@ -101,6 +101,14 @@ fn unparse_node(node: &Node) -> String {
         NodeKind::Assign { name, value } => {
             format!("{} := {}", name, unparse(value, 0))
         }
+        NodeKind::AssignIndex { base, index, value } => {
+            format!(
+                "{}[{}] := {}",
+                unparse(base, 0),
+                unparse(index, 0),
+                unparse(value, 0)
+            )
+        }
         NodeKind::Declare {
             scope,
             kind,

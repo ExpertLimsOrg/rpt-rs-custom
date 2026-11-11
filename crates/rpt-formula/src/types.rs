@@ -388,6 +388,7 @@ pub fn deduce_type(
             acc
         }
         NodeKind::Assign { value, .. } => deduce_type(value, ref_lookup),
+        NodeKind::AssignIndex { value, .. } => deduce_type(value, ref_lookup),
         NodeKind::Seq(stmts) => stmts
             .last()
             .map(|n| deduce_type(n, ref_lookup))
@@ -646,7 +647,9 @@ fn string_max_bytes_raw(
             .last()
             .map(|n| string_max_bytes_raw(n, ref_type, ref_bytes))
             .unwrap_or(MAX_STRING_BYTES),
-        NodeKind::Assign { value, .. } => string_max_bytes_raw(value, ref_type, ref_bytes),
+        NodeKind::Assign { value, .. } | NodeKind::AssignIndex { value, .. } => {
+            string_max_bytes_raw(value, ref_type, ref_bytes)
+        }
         // A string declaration's width is its initialiser's; uninitialised → unbounded.
         NodeKind::Declare {
             init: Some(init), ..
