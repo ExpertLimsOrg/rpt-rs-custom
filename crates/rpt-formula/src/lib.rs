@@ -46,15 +46,18 @@
 //! ```
 
 pub mod ast;
+pub mod combine;
 pub mod eval;
 pub mod lexer;
 pub mod parser;
 pub mod refs;
 pub mod token;
 pub mod types;
+pub mod unparse;
 pub mod validate;
 
 pub use ast::{Node, NodeKind, VarScope};
+pub use combine::{and_crystal, parse_checked, FormulaParseError};
 #[cfg(any(test, feature = "differential"))]
 pub use eval::Evaluator;
 pub use eval::{

@@ -399,18 +399,16 @@ fn with_paper(
 /// A `--selection` value, checked as Crystal syntax up front: a formula that does not parse would
 /// otherwise fail on every record and silently drop them all.
 fn check_selection(formula: &str) -> Result<String, String> {
-    let formula = formula.trim();
-    if formula.is_empty() {
-        return Err("--selection: the formula is empty".to_string());
-    }
-    let (_, diagnostics) = rpt_formula::parse(formula, rpt_formula::Syntax::Crystal);
-    match diagnostics.first() {
-        None => Ok(formula.to_string()),
-        Some(d) => Err(format!(
-            "--selection: not a valid Crystal formula: {}",
-            d.message
-        )),
-    }
+    rpt_formula::parse_checked(formula, "--selection").map_err(|e| {
+        let msg = e.0;
+        if msg.contains(": the formula is empty") {
+            "--selection: the formula is empty".into()
+        } else {
+            let detail = msg.strip_prefix("--selection: ").unwrap_or(&msg);
+            format!("--selection: not a valid Crystal formula: {detail}")
+        }
+    })?;
+    Ok(formula.trim().to_string())
 }
 
 /// `selection` ANDed onto `stored` (or standing alone when there is none).
@@ -418,9 +416,18 @@ fn and_selection(
     stored: Option<rpt_reader::model::Formula>,
     selection: &str,
 ) -> Option<rpt_reader::model::Formula> {
-    let combined = match stored.map(|f| f.0).filter(|f| !f.trim().is_empty()) {
-        Some(stored) => format!("({stored}) and ({selection})"),
+    let selection = selection.trim();
+    let combined = match stored.and_then(|f| {
+        let s = f.0.trim();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    }) {
         None => selection.to_string(),
+        Some(stored) => rpt_formula::and_crystal(&stored, selection)
+            .unwrap_or_else(|_| selection.to_string()),
     };
     Some(rpt_reader::model::Formula(combined))
 }
@@ -1353,7 +1360,7 @@ mod tests {
         let both = with_selection(&report, "{t.x} = 1");
         assert_eq!(
             both.data_definition.record_selection,
-            Some(Formula("({t.y} > 5) and ({t.x} = 1)".into()))
+            Some(Formula("{t.y} > 5 And {t.x} = 1".into()))
         );
         // Embedded saved data is filtered by the saved-data selection instead, so it gets it too.
         assert_eq!(
@@ -1364,6 +1371,20 @@ mod tests {
         assert_eq!(
             report.data_definition.record_selection,
             Some(Formula("{t.y} > 5".into()))
+        );
+    }
+
+    /// A stored selection that does not parse cannot break out of parentheses and widen the filter.
+    #[test]
+    fn selection_ignores_unparseable_stored_formula() {
+        use rpt_reader::model::{Formula, Report};
+        let mut report = Report::default();
+        report.data_definition.record_selection =
+            Some(Formula("{t.y} > 5) Or (True".into()));
+        let out = with_selection(&report, "{t.x} = 1");
+        assert_eq!(
+            out.data_definition.record_selection,
+            Some(Formula("{t.x} = 1".into()))
         );
     }
 
