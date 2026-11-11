@@ -346,6 +346,7 @@ impl<'a> Formatter<'a> {
         row: Option<&'a Row>,
         state: &ResolveState,
         underlay_end: Option<UnderlayEnd>,
+        allow_overflow_break: bool,
     ) -> bool {
         if section.format.base.suppress {
             return false;
@@ -404,7 +405,10 @@ impl<'a> Formatter<'a> {
             //
             // A band never splits mid-section: if it would overflow the body, move the whole band to a
             // new page (this also satisfies section-level KeepTogether for a single band).
-            if self.cursor_y + height > self.body_bottom && self.cursor_y > 0 {
+            if allow_overflow_break
+                && self.cursor_y + height > self.body_bottom
+                && self.cursor_y > 0
+            {
                 self.finish_page();
                 self.begin_page();
             }
@@ -447,10 +451,10 @@ impl<'a> Formatter<'a> {
         &mut self,
         sections: &[&'a Section],
         pinned: bool,
-        row: Option<&Row>,
+        row: Option<&'a Row>,
         state: &ResolveState,
     ) {
-        if pinned {
+        let pin_block = if pinned {
             let total: i32 = sections
                 .iter()
                 .filter(|s| !s.format.base.suppress)
@@ -462,10 +466,15 @@ impl<'a> Formatter<'a> {
                     self.begin_page();
                 }
                 self.cursor_y = (self.body_bottom - total).max(self.cursor_y);
+                true
+            } else {
+                false
             }
-        }
+        } else {
+            false
+        };
         for s in sections {
-            self.emit_band(s, row, state, None);
+            self.emit_band(s, row, state, None, !pin_block);
         }
     }
 
@@ -757,7 +766,7 @@ impl<'a> Formatter<'a> {
         if let Some(hdr) = self.bands.group_headers.get(g.level).cloned() {
             let first = g.details.first().or_else(|| first_row(g));
             for s in hdr {
-                self.emit_band(s, first, &state, Some(UnderlayEnd::GroupFooter(g.level)));
+                self.emit_band(s, first, &state, Some(UnderlayEnd::GroupFooter(g.level)), true);
             }
         }
         // Children: subgroups or detail rows.
@@ -805,7 +814,7 @@ impl<'a> Formatter<'a> {
         let footers: Vec<Vec<&'a Section>> = self.bands.group_footers.clone();
         for (level, hdr) in headers.iter().enumerate() {
             for s in hdr {
-                self.emit_band(s, None, &state, Some(UnderlayEnd::GroupFooter(level)));
+                self.emit_band(s, None, &state, Some(UnderlayEnd::GroupFooter(level)), true);
             }
         }
         for (level, ftr) in footers.iter().enumerate().rev() {
@@ -841,7 +850,7 @@ impl<'a> Formatter<'a> {
             self.advance_running_totals(row, &state);
             let mut visible = false;
             for s in &detail_bands {
-                visible |= self.emit_band(s, Some(row), &state, None);
+                visible |= self.emit_band(s, Some(row), &state, None, true);
             }
             // Only a record that printed counts against the cap ("*Visible* records per page").
             if visible {
