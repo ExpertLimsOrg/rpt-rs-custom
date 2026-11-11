@@ -1277,6 +1277,54 @@ fn box_spans_to_end_section() {
     );
 }
 
+/// A spanning box's decoded height can cover several sections (e.g. 1437 twips in a 105-twip header);
+/// pagination must use the header's design height, not the cross-band span, when growing the band.
+#[test]
+fn spanning_box_does_not_inflate_start_section_band_height() {
+    let mut frame = ReportObject::default();
+    frame.name = "Frame".into();
+    frame.bounds = Rect {
+        left: Twips(0),
+        top: Twips(0),
+        width: Twips(6000),
+        height: Twips(1437),
+    };
+    let mut bs = rpt_model::BoxShape::default();
+    bs.shape.end_section_index = 1;
+    frame.kind = ReportObjectKind::Box(bs);
+    frame.border.top = LineStyle::SingleLine;
+
+    let mut report = Report::default();
+    report.print_options.content_width = Twips(12240);
+    report.print_options.content_height = Twips(5000);
+    report.report_definition.areas = vec![
+        area(
+            AreaSectionKind::ReportHeader,
+            vec![section(
+                AreaSectionKind::ReportHeader,
+                "Head",
+                105,
+                vec![frame],
+            )],
+        ),
+        area(
+            AreaSectionKind::Detail,
+            vec![section(
+                AreaSectionKind::Detail,
+                "Details",
+                300,
+                vec![text_object("Row", "DETAIL", 0)],
+            )],
+        ),
+    ];
+    let doc = rendered(&report, &numeric_rows(1));
+    assert_eq!(
+        page_text_tops(&doc.pages[0], "DETAIL"),
+        vec![105],
+        "detail follows the header band height, not the box's cross-section span"
+    );
+}
+
 /// A report header holding a frame box that ends in the report footer, with the detail band between
 /// them. `rows` detail rows of `row_height` twips each; `bottom` is the frame's stored bottom edge
 /// within the footer.

@@ -572,7 +572,7 @@ impl<'a> Formatter<'a> {
             )
             .unwrap_or(o.format.suppress.value);
             if !suppressed {
-                height = height.max(o.bounds.top.0 + o.bounds.height.0);
+                height = height.max(self.object_band_bottom(o, section));
             }
         }
         for (o, p) in section.objects.iter().zip(&plans) {

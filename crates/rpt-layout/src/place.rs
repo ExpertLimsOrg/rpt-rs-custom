@@ -1388,6 +1388,23 @@ impl Formatter<'_> {
             .is_some_and(|s| usize::from(end_section_index) > s)
     }
 
+    /// Lowest Y within `section` that an object occupies for **band-height** purposes. A box or line
+    /// whose [`DrawingShape::end_section_index`] names a later section still draws across those bands,
+    /// but must not grow the band it starts in by the full decoded span height (often thousands of twips).
+    pub(crate) fn object_band_bottom(&self, obj: &ReportObject, section: &Section) -> i32 {
+        let raw = obj.bounds.top.0 + obj.bounds.height.0;
+        let end = match &obj.kind {
+            ReportObjectKind::Box(b) => b.shape.end_section_index,
+            ReportObjectKind::Line(l) => l.shape.end_section_index,
+            _ => return raw,
+        };
+        if self.spans_sections(end, &section.name) {
+            raw.min(section.height.0)
+        } else {
+            raw
+        }
+    }
+
     /// The height of a shape that spans from `start` section (its top `box_top` twips below the
     /// section top) down to the bottom of the section at `end` (its stored end-section index).
     /// `None` when the start section is not found, the end index is out of range, or the end lies
