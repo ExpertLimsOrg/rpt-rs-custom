@@ -95,12 +95,18 @@ impl<'c> Evaluator<'c> {
                 self.vars.insert(name.to_lowercase(), v.clone());
                 Ok(v)
             }
-            NodeKind::AssignIndex { .. } => {
-                Err(EvalError::Unsupported("array element assignment".into()))
+            NodeKind::AssignIndex { name, index, value } => {
+                let i = self.eval(index)?;
+                let v = self.eval(value)?;
+                self.assign_index(name, i, v)
             }
             NodeKind::Declare {
-                kind, names, init, ..
-            } => self.eval_declare(*kind, names, init.as_deref()),
+                kind,
+                array,
+                names,
+                init,
+                ..
+            } => self.eval_declare(*kind, *array, names, init.as_deref()),
             NodeKind::Seq(stmts) => {
                 let mut last = Value::Null;
                 for s in stmts {
@@ -355,6 +361,7 @@ impl<'c> Evaluator<'c> {
     fn eval_declare(
         &mut self,
         kind: VarKind,
+        array: bool,
         names: &[String],
         init: Option<&Node>,
     ) -> Result<Value, EvalError> {
@@ -373,10 +380,41 @@ impl<'c> Evaluator<'c> {
             let v = self
                 .vars
                 .entry(lname)
-                .or_insert_with(|| var_default(kind))
+                .or_insert_with(|| {
+                    if array {
+                        Value::Array(Vec::new())
+                    } else {
+                        var_default(kind)
+                    }
+                })
                 .clone();
             last = v;
         }
         Ok(last)
+    }
+
+    fn assign_index(&mut self, name: &str, index: Value, value: Value) -> Result<Value, EvalError> {
+        let i = index
+            .as_number()
+            .ok_or_else(|| type_mismatch("array index", &index))?
+            .trunc() as i64;
+        if i < 1 {
+            return Err(EvalError::BadArg(format!("index {i} out of range")));
+        }
+        let slot = i as usize - 1;
+        let lname = name.to_lowercase();
+        let entry = self
+            .vars
+            .entry(lname)
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let items = match entry {
+            Value::Array(items) => items,
+            other => return Err(type_mismatch("array assignment target", &*other)),
+        };
+        if slot >= items.len() {
+            items.resize(slot + 1, Value::Null);
+        }
+        items[slot] = value.clone();
+        Ok(value)
     }
 }

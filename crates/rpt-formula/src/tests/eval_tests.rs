@@ -338,6 +338,10 @@ fn if_expression() {
 fn variables_and_declarations() {
     assert_eq!(num("Local NumberVar x := 5; x * 2"), 10.0);
     assert_eq!(text(r#"StringVar s; s := "hi"; s & "!""#), "hi!");
+    assert_eq!(
+        text(r#"StringVar Array a; a[1] := "hi"; a[2] := "!"; a[1] & a[2]"#),
+        "hi!"
+    );
     // Uninitialised numeric variable defaults to 0.
     assert_eq!(num("NumberVar n; n + 1"), 1.0);
     // Re-declaration does not reset.

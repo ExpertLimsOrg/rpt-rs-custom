@@ -102,6 +102,13 @@ fn crystal_assignment() {
 }
 
 #[test]
+fn crystal_index_assignment() {
+    let (node, diags) = parse(r#"a[1] := "x""#, Syntax::Crystal);
+    assert!(diags.is_empty(), "{diags:?}");
+    assert!(matches!(node.kind, NodeKind::AssignIndex { .. }));
+}
+
+#[test]
 fn statement_sequence() {
     let (node, _) = parse("a := 1; b := 2; a + b", Syntax::Crystal);
     match node.kind {

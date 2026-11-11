@@ -46,6 +46,8 @@ enum Op {
     LoadVar(String),
     /// Pop a value, store it in a variable, push it back (assignment is an expression).
     StoreVar(String),
+    /// Pop value and index, store into an array variable element, and push the value back.
+    StoreIndexVar(String),
     /// Bring a declared variable into scope with a default if absent (no stack effect).
     DeclareDefault(String, Value),
     /// Pop `argc` args (in order) and call a builtin.
@@ -253,17 +255,20 @@ impl Compiler {
                 self.cur_span = span;
                 self.emit(Op::StoreVar(name.to_lowercase()));
             }
-            NodeKind::AssignIndex { .. } => {
+            NodeKind::AssignIndex { name, index, value } => {
+                self.node(index);
+                self.node(value);
                 self.cur_span = span;
-                self.emit(Op::Fail("array element assignment".into()));
+                self.emit(Op::StoreIndexVar(name.to_lowercase()));
             }
             NodeKind::Declare {
                 scope,
                 kind,
+                array,
                 names,
                 init,
                 ..
-            } => self.compile_declare(*scope, *kind, names, init.as_deref()),
+            } => self.compile_declare(*scope, *kind, *array, names, init.as_deref()),
             NodeKind::Seq(stmts) => {
                 if stmts.is_empty() {
                     self.emit(Op::Push(Value::Null));
@@ -558,6 +563,7 @@ impl Compiler {
         &mut self,
         scope: VarScope,
         kind: VarKind,
+        array: bool,
         names: &[String],
         init: Option<&Node>,
     ) {
@@ -575,7 +581,11 @@ impl Compiler {
             }
             return;
         }
-        let default = var_default(kind);
+        let default = if array {
+            Value::Array(Vec::new())
+        } else {
+            var_default(kind)
+        };
         for name in names {
             self.emit(Op::DeclareDefault(name.to_lowercase(), default.clone()));
         }
@@ -752,6 +762,41 @@ fn exec_op(
             if !persisted {
                 vars.insert(name.clone(), v);
             }
+        }
+        Op::StoreIndexVar(name) => {
+            let value = stack.pop().ok_or_else(underflow)?;
+            let index = stack.pop().ok_or_else(underflow)?;
+            let i = index
+                .as_number()
+                .ok_or_else(|| type_mismatch("array index", &index))?
+                .trunc() as i64;
+            if i < 1 {
+                return Err(EvalError::BadArg(format!("index {i} out of range")));
+            }
+            let slot = i as usize - 1;
+            let current = chunk
+                .scopes
+                .get(name)
+                .and_then(|&s| ctx.var_get(s, name))
+                .or_else(|| vars.get(name).cloned())
+                .unwrap_or(Value::Array(Vec::new()));
+            let mut items = match current {
+                Value::Array(items) => items,
+                other => return Err(type_mismatch("array assignment target", &other)),
+            };
+            if slot >= items.len() {
+                items.resize(slot + 1, Value::Null);
+            }
+            items[slot] = value.clone();
+            let stored = Value::Array(items);
+            let persisted = match chunk.scopes.get(name) {
+                Some(&scope) => ctx.var_set(scope, name, stored.clone()),
+                None => false,
+            };
+            if !persisted {
+                vars.insert(name.clone(), stored);
+            }
+            stack.push(value);
         }
         Op::DeclareDefault(name, default) => {
             // A persistent var initialises only when unset, so an accumulated value survives

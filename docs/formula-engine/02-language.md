@@ -101,7 +101,7 @@ re-declaration brings the name into scope without resetting an existing value.
 
 ### Assignment and the Basic result
 
-`name := expr` (Crystal) / `name = expr` (Basic). In Basic, the formula's return value is whatever is assigned to the
+`name := expr` or `name[index] := expr` (Crystal) / `name = expr` (Basic). In Basic, the formula's return value is whatever is assigned to the
 implicit `formula` variable — the parser appends a read of `formula` when the body assigns it.
 
 ### If … Then … End If (Basic block form)
@@ -217,7 +217,7 @@ caseClause  = "Case" caseTest { "," caseTest } [ ":" ] body ;
 caseTest    = "Is" relop expr | expr [ "To" expr ] ;
 varDecl     = [ "Local"|"Global"|"Shared" ] typeVar [ "Array" ] ident { "," ident } [ assign expr ]   (* Crystal *)
             | ("Dim"|"ReDim") ident [ "(" … ")" ] { "," ident } [ "As" typeName ] ;                    (* Basic *)
-assignment  = ident assign expr ;                 (* assign = ":=" (Crystal) | "=" (Basic) *)
+assignment  = (ident | ident "[" expr "]") assign expr ;   (* assign = ":=" (Crystal) | "=" (Basic) *)
 expr        = <precedence ladder, levels 1..17> ;
 primary     = number | string | boolean | dateLit | reference | group
             | "[" [ expr { "," expr } ] "]" | call | ident | ifExpr | selectExpr ;   (* ifExpr/selectExpr: Crystal *)

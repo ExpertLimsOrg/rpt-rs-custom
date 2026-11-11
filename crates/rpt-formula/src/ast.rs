@@ -149,13 +149,13 @@ pub enum NodeKind {
         /// The assigned value expression.
         value: Box<Node>,
     },
-    /// Array element assignment `base[index] := value` (Crystal).
+    /// Assignment `name[index] := value` (Crystal).
     AssignIndex {
-        /// The array (or subscriptable) expression being written.
-        base: Box<Node>,
-        /// The subscript index.
+        /// The target array variable name.
+        name: String,
+        /// The 1-based index expression.
         index: Box<Node>,
-        /// The value assigned into the element.
+        /// The assigned value expression.
         value: Box<Node>,
     },
     /// Variable declaration `[Local|Global|Shared] <Type>Var [Array] name[, name…] [:= init]`.

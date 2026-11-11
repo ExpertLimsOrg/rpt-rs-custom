@@ -566,7 +566,47 @@ impl Parser {
                 span,
             );
         }
+        // Assignment `name := value` and `name[index] := value` (Crystal). In Basic, `=` at
+        // statement position is handled in `parse_statement`; expression position uses `=` as
+        // equality and never consumes assignment.
+        if self.syntax == Syntax::Crystal {
+            if let Some((name, maybe_index)) = self.assign_target(&base) {
+                if self.eat_op(op::ASSIGN) {
+                    let value = self.parse_expr();
+                    return match maybe_index {
+                        Some(index) => Node::new(
+                            NodeKind::AssignIndex {
+                                name,
+                                index: Box::new(index),
+                                value: Box::new(value),
+                            },
+                            Span::new(base.span.start, self.prev_end()),
+                        ),
+                        None => Node::new(
+                            NodeKind::Assign {
+                                name,
+                                value: Box::new(value),
+                            },
+                            Span::new(base.span.start, self.prev_end()),
+                        ),
+                    };
+                }
+            }
+        }
         base
+    }
+
+    /// Whether `lhs` is assignable in Crystal: a bare variable name (`name`) or one subscript on a
+    /// variable (`name[index]`).
+    fn assign_target(&self, lhs: &Node) -> Option<(String, Option<Node>)> {
+        match &lhs.kind {
+            NodeKind::Ident(name) => Some((name.clone(), None)),
+            NodeKind::Index { base, index } => match &base.kind {
+                NodeKind::Ident(name) => Some((name.clone(), Some((**index).clone()))),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     // level 17: primary atoms
@@ -688,20 +728,6 @@ impl Parser {
                 self.diag("expected `)`");
             }
             return Node::new(NodeKind::Call { name, args }, self.span_from(start));
-        }
-        // Assignment `name := value` (Crystal). In Basic, `=` at statement position is an
-        // assignment handled in `parse_statement`; the atom is reached only in expression
-        // position, where a Basic `=` is the equality operator (left for `parse_equality`),
-        // so the atom never consumes `=` as an assignment.
-        if self.syntax == Syntax::Crystal && self.eat_op(op::ASSIGN) {
-            let value = self.parse_expr();
-            return Node::new(
-                NodeKind::Assign {
-                    name,
-                    value: Box::new(value),
-                },
-                self.span_from(start),
-            );
         }
         Node::new(NodeKind::Ident(name), self.span_from(start))
     }

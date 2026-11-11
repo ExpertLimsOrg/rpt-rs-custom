@@ -387,8 +387,9 @@ pub fn deduce_type(
             }
             acc
         }
-        NodeKind::Assign { value, .. } => deduce_type(value, ref_lookup),
-        NodeKind::AssignIndex { value, .. } => deduce_type(value, ref_lookup),
+        NodeKind::Assign { value, .. } | NodeKind::AssignIndex { value, .. } => {
+            deduce_type(value, ref_lookup)
+        }
         NodeKind::Seq(stmts) => stmts
             .last()
             .map(|n| deduce_type(n, ref_lookup))
