@@ -132,6 +132,10 @@ impl MultiColCursor {
     }
 }
 
+/// Page-footer wrap uses cosmic-text metrics; PDF painting uses harfrust and can measure wider. Break
+/// lines slightly early so centred disclaimer text does not rely on clipping alone.
+const FOOTER_WRAP_SAFETY: f64 = 0.93;
+
 pub(crate) fn is_fixed_band(kind: AreaSectionKind) -> bool {
     matches!(
         kind,
@@ -305,7 +309,10 @@ impl<'a> Formatter<'a> {
                 self.text_layout,
             ));
             let ascent = Twips(self.text_layout.ascent_twips(&para_font) as i32);
-            let avail = (body_w - left - right).max(1);
+            let mut avail = (body_w - left - right).max(1);
+            if matches!(section.kind, AreaSectionKind::PageFooter) {
+                avail = ((avail as f64) * FOOTER_WRAP_SAFETY).floor().max(1.0) as i32;
+            }
             // A spaced paragraph must break at the width it is drawn at, so the wrap measures through
             // the same adjusted advance the emitted run reports. Unspaced text (the default) uses the
             // injected layout untouched.

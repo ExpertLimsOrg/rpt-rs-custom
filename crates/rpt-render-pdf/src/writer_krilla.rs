@@ -853,6 +853,33 @@ fn draw_justified_words(
 
 /// A rectangular clip matching a text run's box (points). Shaping can land slightly wider than the
 /// layout measured, so clip before painting glyphs to honor the report margins.
+/// Total horizontal advance in points for a non-justified run, using the same shaper as
+/// [`place_glyphs`]. Layout may report a narrower cosmic-text width; anchoring and clipping must
+/// follow what is actually painted.
+fn shaped_run_width_pt(
+    fonts: &mut FontCache,
+    segments: &[rpt_text::FaceRun],
+    text: &str,
+    size: f32,
+    spacing: f32,
+) -> Option<f64> {
+    let mut pen = 0.0f32;
+    let mut drew = false;
+    for seg in segments {
+        let Some(face) = fonts.face(seg.face) else {
+            continue;
+        };
+        let Some(shaper) = Shaper::new(&face) else {
+            continue;
+        };
+        let seg_text = &text[seg.range.clone()];
+        let (_, advance) = shaper.shape(seg_text, size, spacing);
+        pen += advance;
+        drew = true;
+    }
+    drew.then_some(pen as f64)
+}
+
 fn run_clip_path(bounds: &Rect) -> Option<krilla::geom::Path> {
     let x = pt(bounds.left.0) as f32;
     let y = pt(bounds.top.0) as f32;
@@ -897,17 +924,20 @@ fn draw_text(surface: &mut Surface, fonts: &mut FontCache, t: &TextRun) {
     // Rigid character spacing is part of the producer's advance model, so it is already inside a
     // measured `metrics.advance`; the estimate has to add it itself to anchor a spaced run correctly.
     let spacing_pt = pt(t.character_spacing.0);
-    let text_w = match &t.metrics {
+    let layout_w = match &t.metrics {
         Some(m) => pt(m.advance.0),
         None => {
             approx_text_width(&t.text, size as f64) + spacing_pt * t.text.chars().count() as f64
         }
     };
+    let shaped_w = shaped_run_width_pt(fonts, &segments, &t.text, size, spacing_pt as f32);
+    // Paint width: prefer HarfBuzz (what `place_glyphs` draws); layout metrics are a fallback.
+    let paint_w = shaped_w.unwrap_or(layout_w);
     let box_w_pt = pt(t.bounds.width.0);
     let x = {
-        let x = aligned_x(t.align, pt(t.bounds.left.0), box_w_pt, text_w);
+        let x = aligned_x(t.align, pt(t.bounds.left.0), box_w_pt, paint_w);
         // Centre/right lines that are wider than the box must not be shifted past the left margin.
-        if text_w > box_w_pt && matches!(t.align, TextAlign::Center | TextAlign::Right) {
+        if paint_w > box_w_pt && matches!(t.align, TextAlign::Center | TextAlign::Right) {
             pt(t.bounds.left.0)
         } else {
             x
@@ -921,9 +951,9 @@ fn draw_text(surface: &mut Surface, fonts: &mut FontCache, t: &TextRun) {
     // y-down (like `from_rotate_at`'s CW-positive angle), so negate to render CCW. `0.0` pushes no
     // transform, keeping upright output identical.
     let rotated = t.rotation != 0.0;
-    // Clip only when the measured advance exceeds the run box — layout/shaper can disagree slightly on
-    // long lines; avoid clipping every upright run so ascenders, underlines, and decoration survive.
-    let needs_clip = !rotated && text_w > box_w_pt + f64::EPSILON;
+    // Clip every upright run to its box: layout (cosmic-text) and PDF shaping (harfrust) can disagree
+    // slightly, and centred lines may still paint past the margins without a hard clip.
+    let needs_clip = !rotated;
     let clipped = needs_clip.then(|| run_clip_path(&t.bounds)).flatten();
     if let Some(ref path) = clipped {
         surface.push_clip_path(path, &FillRule::NonZero);
@@ -935,7 +965,7 @@ fn draw_text(surface: &mut Surface, fonts: &mut FontCache, t: &TextRun) {
     // Justified: spread the box's slack across the inter-word gaps so both edges flush. The layout
     // marks a paragraph's last line `Left`, so only interior wrapped lines reach this.
     let extra =
-        rpt_render_util::justify_gap_extra(t.align, &t.text, pt(t.bounds.width.0), text_w) as f32;
+        rpt_render_util::justify_gap_extra(t.align, &t.text, pt(t.bounds.width.0), layout_w) as f32;
     place_glyphs(
         surface,
         fonts,
@@ -946,7 +976,7 @@ fn draw_text(surface: &mut Surface, fonts: &mut FontCache, t: &TextRun) {
         extra,
         spacing_pt as f32,
     );
-    draw_text_decoration(surface, t, x, baseline_y, ascent_pt, size, text_w);
+    draw_text_decoration(surface, t, x, baseline_y, ascent_pt, size, paint_w);
     if rotated {
         surface.pop();
     }
