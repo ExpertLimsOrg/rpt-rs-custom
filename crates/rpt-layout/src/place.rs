@@ -16,9 +16,9 @@ use rpt_data::{
 use rpt_formula::eval::Value;
 use rpt_formula::token::strip_braces;
 use rpt_model::{
-    BlobFieldObject, BoxShape, Color, FieldObject, FieldRefKind, ImageFormat, LineShape,
-    LineStyle as RptLineStyle, PictureObject, Rect, ReportObject, ReportObjectKind, Section,
-    SubreportObject, Twips, VerticalAlignment,
+    AreaSectionKind, BlobFieldObject, BoxShape, Color, FieldObject, FieldRefKind, ImageFormat,
+    LineShape, LineStyle as RptLineStyle, PictureObject, Rect, ReportObject, ReportObjectKind,
+    Section, SubreportObject, Twips, VerticalAlignment,
 };
 use rpt_pages::{
     Diagnostic, DiagnosticKind, DrawOp, ImageFit, ImageOp, LineOp, LineStyle, ObjectKind,
@@ -101,6 +101,8 @@ struct Placement<'a> {
     band_height: i32,
     section_design_height: i32,
     instance: u32,
+    /// In a fixed page header/footer band, only emit wrapped lines that fit the object box height.
+    clip_text_to_box: bool,
 }
 
 /// A box that starts in one section and ends in a later one, waiting for that section to print.
@@ -210,6 +212,7 @@ impl Formatter<'_> {
                 {
                     continue;
                 }
+                let clip_text = crate::paginate::is_fixed_band(section.kind);
                 self.emit_object(
                     obj,
                     &section.name,
@@ -219,6 +222,7 @@ impl Formatter<'_> {
                     height,
                     design_height,
                     subs.get(i).and_then(Option::as_ref),
+                    clip_text,
                 );
             }
         }
@@ -235,6 +239,7 @@ impl Formatter<'_> {
         band_height: i32,
         section_design_height: i32,
         sub: Option<&SubreportRender>,
+        clip_text_to_box: bool,
     ) {
         // A conditional visibility formula, when present, overrides the static suppress flag. It is
         // stored under its reserved Crystal name (`Object_Visibility`), evaluated per row: a `True`
@@ -255,6 +260,7 @@ impl Formatter<'_> {
             band_height,
             section_design_height,
             instance,
+            clip_text_to_box,
         };
 
         match &obj.kind {
@@ -331,10 +337,19 @@ impl Formatter<'_> {
             let deg = obj.format.text_rotation.degrees();
             let multiline = plan.lines.len() > 1;
             let mut y = rect.top.0 + v_offset;
+            let box_bottom = rect.top.0 + rect.height.0;
             // Ops the last line emitted — one per tab-separated segment, so the page-total fixup
             // below can address every run the line produced.
             let mut emitted = 0;
             for (i, line) in plan.lines.iter().enumerate() {
+                // Fixed header/footer bands: drop wrapped overflow lines, but keep the first line even
+                // when its pitch exceeds the design box (native draws one clipped line).
+                if at.clip_text_to_box
+                    && i > 0
+                    && y + line.line_height.0 > box_bottom
+                {
+                    break;
+                }
                 let line_rect = if deg % 180 == 90 {
                     rotated_line_rect(rect, deg, i as i32, line.line_height.0, line.width)
                 } else {

@@ -21,6 +21,9 @@ rpt-pages = { workspace = true }
 
 [dev-dependencies]
 rpt-test-support = { workspace = true }
+rpt-model = { workspace = true, features = ["serde"] }
+rpt-text = { workspace = true, features = ["cosmic"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

@@ -1703,6 +1703,8 @@ dependencies = [
  "rpt-model",
  "rpt-pages",
  "rpt-test-support",
+ "rpt-text",
+ "serde_json",
 ]
 
 [[package]]

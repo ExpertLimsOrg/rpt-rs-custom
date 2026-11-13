@@ -9,7 +9,8 @@ use crate::{
 };
 use rpt_data::{DataContext, GroupInstance, Row};
 use rpt_model::{
-    LineSpacing, Paragraph, ReadingOrder, ReportObject, ReportObjectKind, Section, Twips,
+    AreaSectionKind, LineSpacing, Paragraph, ReadingOrder, ReportObject, ReportObjectKind, Section,
+    Twips,
 };
 use rpt_pages::{FontSpec, ObjectKind, Page, PageCheckpoint, TextAlign, TextLayout};
 use std::rc::Rc;
@@ -131,14 +132,46 @@ impl MultiColCursor {
     }
 }
 
+pub(crate) fn is_fixed_band(kind: AreaSectionKind) -> bool {
+    matches!(
+        kind,
+        AreaSectionKind::PageHeader | AreaSectionKind::PageFooter
+    )
+}
+
 impl<'a> Formatter<'a> {
-    /// Resolve a text/field object to its wrapped display lines (`None` for non-text objects). Wraps
-    /// only when the object has **Can-Grow** set (`obj.format.can_grow`) *and* the band allows growth
-    /// (`allow_grow`); otherwise the box clips. Can-grow is inert in a page header/footer — a fixed
-    /// repeating band — so those pass `allow_grow = false` (matching the native engine). Computed once
-    /// per band so height and emitted runs agree.
+    /// Printable body width in twips (content area, margin-free coordinates).
+    fn printable_width_twips(&self) -> i32 {
+        let po = &self.report.print_options;
+        if po.content_width.0 > 0 {
+            po.content_width.0
+        } else {
+            let m = &po.margins;
+            (self.page_size.width.0 - m.left.0 - m.right.0).max(1)
+        }
+    }
+
+    /// Whether long segments should word-wrap inside the object's box for this band.
+    fn should_word_wrap(
+        section_kind: AreaSectionKind,
+        obj: &ReportObject,
+        allow_grow: bool,
+    ) -> bool {
+        match section_kind {
+            AreaSectionKind::PageHeader => false,
+            // The page footer is a fixed band, but text still wraps horizontally inside its boxes.
+            AreaSectionKind::PageFooter => true,
+            _ => obj.format.can_grow && allow_grow,
+        }
+    }
+
+    /// Resolve a text/field object to its wrapped display lines (`None` for non-text objects). In
+    /// flow bands, wraps when **Can-Grow** is set and the band allows growth (`allow_grow`). In a
+    /// page footer, segments wrap to the printable width without growing the band; in a page header
+    /// can-grow is inert (no wrap). Computed once per band so height and emitted runs agree.
     fn text_plan(
         &self,
+        section: &Section,
         obj: &ReportObject,
         ctx: Option<&DataContext>,
         state: &ResolveState,
@@ -246,8 +279,12 @@ impl<'a> Formatter<'a> {
         let body_w = if rotated_quarter {
             obj.bounds.height.0
         } else {
-            obj.bounds.width.0
+            let printable = self.printable_width_twips();
+            let max_w = (printable - obj.bounds.left.0).max(1);
+            obj.bounds.width.0.min(max_w)
         };
+        let word_wrap =
+            Self::should_word_wrap(section.kind, obj, allow_grow);
         let mut lines: Vec<LayoutLine> = Vec::new();
         for (i, seg) in raw.split('\n').enumerate() {
             let para = paragraphs.and_then(|ps| ps.get(i));
@@ -280,7 +317,7 @@ impl<'a> Formatter<'a> {
                 spaced = crate::text::SpacedLayout::new(self.text_layout, spacing);
                 &spaced
             };
-            let wrapped: Vec<String> = if obj.format.can_grow && allow_grow {
+            let wrapped: Vec<String> = if word_wrap {
                 // The first-line indent narrows where the first line breaks, not just where it sits:
                 // the first line wraps at `avail - first`, the rest at the paragraph's full `avail`.
                 wrap_first_line_indent(wrap_layout, seg, avail as f64, first as f64, &para_font)
@@ -315,7 +352,7 @@ impl<'a> Formatter<'a> {
             lines.push(LayoutLine {
                 text: String::new(),
                 x_offset: Twips(0),
-                width: obj.bounds.width,
+                width: Twips(body_w),
                 font: font.clone(),
                 line_height: Twips(self.text_layout.line_height_twips(&font) as i32),
                 ascent: Twips(self.text_layout.ascent_twips(&font) as i32),
@@ -561,9 +598,10 @@ impl<'a> Formatter<'a> {
         let plans: Vec<Option<TextPlan>> = section
             .objects
             .iter()
-            .map(|o| self.text_plan(o, ctx, state, allow_grow))
+            .map(|o| self.text_plan(section, o, ctx, state, allow_grow))
             .collect();
         let mut height = section.height.0;
+        let fixed_band = is_fixed_band(section.kind);
         for o in &section.objects {
             let suppressed = crate::resolve::cond_bool(
                 &o.format.condition_formulas,
@@ -577,7 +615,7 @@ impl<'a> Formatter<'a> {
         }
         for (o, p) in section.objects.iter().zip(&plans) {
             if let Some(p) = p {
-                if o.format.can_grow && p.lines.len() > 1 {
+                if !fixed_band && o.format.can_grow && p.lines.len() > 1 {
                     // Sum each line's own pitch: mixed paragraph fonts and 1.5/double/exact line
                     // spacing make lines unequal, so the grown height is their total, not count × one.
                     let text_h: i32 = p.lines.iter().map(|l| l.line_height.0).sum();

@@ -165,6 +165,250 @@ fn page_header_does_not_grow_can_grow_is_inert() {
 }
 
 #[test]
+fn page_header_still_emits_first_line_when_pitch_exceeds_box_height() {
+    let mut head = text_object("Hdr", "TITLE", 0);
+    head.bounds.height = Twips(60);
+    head.format.can_grow = true;
+    if let ReportObjectKind::Text(t) = &mut head.kind {
+        t.font_color.font.size_pt = 24.0;
+    }
+    let mut report = Report::default();
+    report.print_options.content_width = Twips(12240);
+    report.print_options.content_height = Twips(15840);
+    report.report_definition.areas = vec![
+        area(
+            AreaSectionKind::PageHeader,
+            vec![section(AreaSectionKind::PageHeader, "PH", 60, vec![head])],
+        ),
+        area(
+            AreaSectionKind::Detail,
+            vec![section(
+                AreaSectionKind::Detail,
+                "Details",
+                240,
+                vec![text_object("MARK", "MARK", 0)],
+            )],
+        ),
+    ];
+    let saved = empty_saved();
+    let ds = build_dataset(&SavedDataSource::new(&saved), &report.data_definition);
+    let formulas = rpt_data::compile_formulas(&report.data_definition);
+    let doc = layout(&report, &ds, &formulas);
+    let hdr: Vec<_> = doc.pages[0]
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            DrawOp::Text(t) if t.text == "TITLE" => Some(t),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        hdr.len(),
+        1,
+        "page header must emit one line even when pitch exceeds the design box"
+    );
+}
+
+#[test]
+fn page_footer_wraps_within_printable_width_when_object_is_wider() {
+    const CONTENT_W: i32 = 5000;
+    let long = "word ".repeat(80);
+    let mut foot = text_object("Foot", &long, 0);
+    foot.bounds = Rect {
+        left: Twips(0),
+        top: Twips(0),
+        width: Twips(6000),
+        height: Twips(2000),
+    };
+    let mut report = Report::default();
+    report.print_options.content_width = Twips(CONTENT_W);
+    report.print_options.content_height = Twips(3000);
+    report.report_definition.areas = vec![
+        area(
+            AreaSectionKind::Detail,
+            vec![section(
+                AreaSectionKind::Detail,
+                "Details",
+                240,
+                vec![text_object("Row", "line", 0)],
+            )],
+        ),
+        area(
+            AreaSectionKind::PageFooter,
+            vec![section(
+                AreaSectionKind::PageFooter,
+                "PF",
+                400,
+                vec![foot],
+            )],
+        ),
+    ];
+    let saved = empty_saved();
+    let ds = build_dataset(&SavedDataSource::new(&saved), &report.data_definition);
+    let formulas = rpt_data::compile_formulas(&report.data_definition);
+    let doc = layout(&report, &ds, &formulas);
+
+    let foot_runs: Vec<_> = doc.pages[0]
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            DrawOp::Text(t) if t.text != "line" => Some(t),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        foot_runs.len() > 1,
+        "page footer should wrap long text, got {} run(s)",
+        foot_runs.len()
+    );
+    for r in &foot_runs {
+        assert!(
+            r.bounds.left.0 + r.bounds.width.0 <= CONTENT_W,
+            "run {:?} exceeds printable width",
+            r.text
+        );
+        assert!(
+            r.bounds.width.0 <= CONTENT_W,
+            "run width {} > content {}",
+            r.bounds.width.0,
+            CONTENT_W
+        );
+    }
+}
+
+#[test]
+fn page_footer_can_grow_object_wraps_without_growing_the_band() {
+    const CONTENT_W: i32 = 5000;
+    let mut foot = wrapping_can_grow("Foot");
+    foot.bounds = Rect {
+        left: Twips(37),
+        top: Twips(0),
+        width: Twips(1500),
+        height: Twips(2000),
+    };
+    let mut report = Report::default();
+    report.print_options.content_width = Twips(CONTENT_W);
+    report.print_options.content_height = Twips(3000);
+    report.report_definition.areas = vec![
+        area(
+            AreaSectionKind::Detail,
+            vec![section(
+                AreaSectionKind::Detail,
+                "Details",
+                240,
+                vec![text_object("MARK", "MARK", 0)],
+            )],
+        ),
+        area(
+            AreaSectionKind::PageFooter,
+            vec![section(
+                AreaSectionKind::PageFooter,
+                "PF",
+                400,
+                vec![foot],
+            )],
+        ),
+    ];
+    let saved = empty_saved();
+    let ds = build_dataset(&SavedDataSource::new(&saved), &report.data_definition);
+    let formulas = rpt_data::compile_formulas(&report.data_definition);
+    let doc = layout(&report, &ds, &formulas);
+
+    let foot_runs: Vec<_> = doc.pages[0]
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            DrawOp::Text(t) if t.text != "MARK" => Some(t),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        foot_runs.len() > 1,
+        "can-grow footer text should still wrap: {} run(s)",
+        foot_runs.len()
+    );
+    let max_right = CONTENT_W - 37;
+    for r in &foot_runs {
+        assert!(
+            r.bounds.left.0 + r.bounds.width.0 <= max_right + 37,
+            "run exceeds printable area"
+        );
+    }
+    // Detail marker stays at the fixed detail top — the footer did not steal body space.
+    let mark_top = doc.pages[0]
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            DrawOp::Text(t) if t.text == "MARK" => Some(t.bounds.top.0),
+            _ => None,
+        })
+        .next()
+        .expect("MARK");
+    assert_eq!(mark_top, 0, "page footer wrap must not push body content");
+}
+
+#[test]
+fn test2_page_footer_legal_text_wraps_within_printable_width() {
+    use rpt_text::{CosmicLayout, FontProvider};
+    use std::path::Path;
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp-test2.json");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "missing {} ({e}); json-dump test2.rpt to repo root: \
+             rpt json-dump test2.rpt .tmp-test2.json",
+            path.display()
+        );
+    });
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("test2 json");
+    let report: Report = serde_json::from_value(v["model"].clone()).expect("report model");
+    let content_w = report.print_options.content_width.0;
+    let saved = empty_saved();
+    let ds = build_dataset(&SavedDataSource::new(&saved), &report.data_definition);
+    let formulas = rpt_data::compile_formulas(&report.data_definition);
+    let text = CosmicLayout::new(FontProvider::bundled());
+    let doc = crate::layout_with(&report, &ds, &formulas, Box::new(text));
+
+    let footer_ops: Vec<_> = doc.pages[0]
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            DrawOp::Text(t) => t
+                .source
+                .as_ref()
+                .filter(|s| s.section == "PageFooterSection1")
+                .map(|_| t),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !footer_ops.is_empty(),
+        "expected page footer text runs"
+    );
+    let text26_lines: Vec<_> = footer_ops
+        .iter()
+        .filter(|t| {
+            t.source
+                .as_ref()
+                .is_some_and(|s| s.object_name.as_deref() == Some("Text26"))
+        })
+        .collect();
+    assert!(
+        text26_lines.len() > 1,
+        "Text26 disclaimer should wrap to multiple lines, got {}",
+        text26_lines.len()
+    );
+    for t in &footer_ops {
+        assert!(
+            t.bounds.left.0 + t.bounds.width.0 <= content_w,
+            "footer run {:?} exceeds content width {}",
+            t.source.as_ref().and_then(|s| s.object_name.clone()),
+            content_w
+        );
+    }
+}
+
+#[test]
 fn left_indent_shifts_run_and_reduces_width() {
     let runs = runs_for_object(indented_text("Lbl", "ID", 72, 0, 0));
     assert_eq!(runs.len(), 1);

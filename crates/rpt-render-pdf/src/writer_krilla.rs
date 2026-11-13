@@ -24,6 +24,7 @@ use std::rc::Rc;
 use krilla::configure::{Accessibility, Archival, ConfigurationBuilder, ValidationError};
 use krilla::error::KrillaError;
 use krilla::geom::{PathBuilder, Point, Size, Transform};
+use krilla::paint::FillRule;
 use krilla::image::Image;
 use krilla::metadata::{DateTime, Metadata};
 use krilla::outline::Outline;
@@ -850,6 +851,25 @@ fn draw_justified_words(
     }
 }
 
+/// A rectangular clip matching a text run's box (points). Shaping can land slightly wider than the
+/// layout measured, so clip before painting glyphs to honor the report margins.
+fn run_clip_path(bounds: &Rect) -> Option<krilla::geom::Path> {
+    let x = pt(bounds.left.0) as f32;
+    let y = pt(bounds.top.0) as f32;
+    let w = pt(bounds.width.0) as f32;
+    let ht = pt(bounds.height.0) as f32;
+    if w <= 0.0 || ht <= 0.0 {
+        return None;
+    }
+    let mut pb = PathBuilder::new();
+    pb.move_to(x, y);
+    pb.line_to(x + w, y);
+    pb.line_to(x + w, y + ht);
+    pb.line_to(x, y + ht);
+    pb.close();
+    pb.finish()
+}
+
 fn draw_text(surface: &mut Surface, fonts: &mut FontCache, t: &TextRun) {
     if t.text.is_empty() {
         return;
@@ -883,7 +903,16 @@ fn draw_text(surface: &mut Surface, fonts: &mut FontCache, t: &TextRun) {
             approx_text_width(&t.text, size as f64) + spacing_pt * t.text.chars().count() as f64
         }
     };
-    let x = aligned_x(t.align, pt(t.bounds.left.0), pt(t.bounds.width.0), text_w) as f32;
+    let box_w_pt = pt(t.bounds.width.0);
+    let x = {
+        let x = aligned_x(t.align, pt(t.bounds.left.0), box_w_pt, text_w);
+        // Centre/right lines that are wider than the box must not be shifted past the left margin.
+        if text_w > box_w_pt && matches!(t.align, TextAlign::Center | TextAlign::Right) {
+            pt(t.bounds.left.0)
+        } else {
+            x
+        }
+    } as f32;
     // Text is fill-only. Clear any stroke left active by a preceding path op (a rule/line/rect) so
     // krilla does not fill *and* stroke the glyphs — a leaked stroke renders the run doubled/haloed.
     surface.set_fill(Some(solid(t.color)));
@@ -892,6 +921,13 @@ fn draw_text(surface: &mut Surface, fonts: &mut FontCache, t: &TextRun) {
     // y-down (like `from_rotate_at`'s CW-positive angle), so negate to render CCW. `0.0` pushes no
     // transform, keeping upright output identical.
     let rotated = t.rotation != 0.0;
+    // Clip only when the measured advance exceeds the run box — layout/shaper can disagree slightly on
+    // long lines; avoid clipping every upright run so ascenders, underlines, and decoration survive.
+    let needs_clip = !rotated && text_w > box_w_pt + f64::EPSILON;
+    let clipped = needs_clip.then(|| run_clip_path(&t.bounds)).flatten();
+    if let Some(ref path) = clipped {
+        surface.push_clip_path(path, &FillRule::NonZero);
+    }
     if rotated {
         let (px, py) = (pt(t.bounds.left.0) as f32, pt(t.bounds.top.0) as f32);
         surface.push_transform(&Transform::from_rotate_at(-t.rotation, px, py));
@@ -912,6 +948,9 @@ fn draw_text(surface: &mut Surface, fonts: &mut FontCache, t: &TextRun) {
     );
     draw_text_decoration(surface, t, x, baseline_y, ascent_pt, size, text_w);
     if rotated {
+        surface.pop();
+    }
+    if clipped.is_some() {
         surface.pop();
     }
 }
