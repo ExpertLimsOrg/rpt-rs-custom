@@ -1,0 +1,24 @@
+[package]
+name = "rpt-codes-cli"
+description = "The `rpt-codes` command: QR (URL in base64) or Code 39 barcode → PNG"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories = ["command-line-utilities"]
+rust-version.workspace = true
+
+[[bin]]
+name = "rpt-codes"
+path = "src/main.rs"
+
+[dependencies]
+rpt-codes = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

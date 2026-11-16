@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 WIP.
 
+### Added
+
+- `rpt-codes`, a standalone CLI that writes PNG images for a QR code (URL supplied as standard Base64,
+  up to 4096 decoded bytes) or a Code 39 barcode (`--code` + `--value`), sized with `--width-mm` /
+  `--height-mm` (QR requires equal width and height). Shipped in release archives, the Docker image,
+  and `THIRD-PARTY-NOTICES.md`.
+
 ### Fixed
 
 - A `Boolean` field whose value arrives as a number is now read as a boolean. Only the word `true` was true, so the

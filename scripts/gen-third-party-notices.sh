@@ -41,8 +41,9 @@ trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/notices.md" <<'EOF'
 # Third-party notices
 
-The `rpt` and `rpt-render` binaries are statically linked, so the crates listed here are compiled
-into them and distributed with them, and the bundled font faces are embedded in the binary itself.
+The `rpt`, `rpt-render`, and `rpt-codes` binaries are statically linked, so the crates listed here are
+compiled into them and distributed with them, and the bundled font faces are embedded in the `rpt-render`
+binary itself.
 Their licences are reproduced below to satisfy the notice conditions those licences attach to
 redistribution.
 

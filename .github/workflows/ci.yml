@@ -409,7 +409,7 @@ jobs:
           rustup component add llvm-tools-preview
           cargo install cargo-binutils --locked
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p rpt-cli -p rpt-render-cli
+        run: cargo build --release --target ${{ matrix.target }} -p rpt-cli -p rpt-render-cli -p rpt-codes-cli
 
       # Split the debug info out rather than discarding it. `strip` alone would throw away the
       # symbols; this keeps them in a sidecar and records a .gnu_debuglink in the binary, so Rust's
@@ -422,7 +422,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "target/${{ matrix.target }}/release"
-          for b in rpt rpt-render; do
+          for b in rpt rpt-render rpt-codes; do
             rust-objcopy --only-keep-debug "$b" "$b.debug"
             rust-objcopy --strip-debug --strip-unneeded --add-gnu-debuglink="$b.debug" "$b"
             chmod 644 "$b.debug"
@@ -436,7 +436,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "target/${{ matrix.target }}/release"
-          for b in rpt rpt-render; do
+          for b in rpt rpt-render rpt-codes; do
             dsymutil "$b" -o "$b.dSYM"
             strip -x "$b"
           done
@@ -460,12 +460,12 @@ jobs:
           # covers only this project's own code.
           cp README.md LICENSE THIRD-PARTY-NOTICES.md "$stage/"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "$bindir/rpt.exe" "$bindir/rpt-render.exe" "$stage/"
+            cp "$bindir/rpt.exe" "$bindir/rpt-render.exe" "$bindir/rpt-codes.exe" "$stage/"
             (cd "$stage" && 7z a -tzip "$name.zip" ./* >/dev/null)
             mv "$stage/$name.zip" .
             archive="$name.zip"
           else
-            cp "$bindir/rpt" "$bindir/rpt-render" "$stage/"
+            cp "$bindir/rpt" "$bindir/rpt-render" "$bindir/rpt-codes" "$stage/"
             tar -czf "$name.tar.gz" -C "$stage" .
             archive="$name.tar.gz"
           fi
@@ -489,8 +489,8 @@ jobs:
           # dependency tree, and this archive is downloaded on its own.
           cp LICENSE THIRD-PARTY-NOTICES.md "$stage/"
           case "${{ runner.os }}" in
-            Linux)   cp "$bindir"/rpt.debug "$bindir"/rpt-render.debug "$stage/" ;;
-            macOS)   cp -R "$bindir"/rpt.dSYM "$bindir"/rpt-render.dSYM "$stage/" ;;
+            Linux)   cp "$bindir"/rpt.debug "$bindir"/rpt-render.debug "$bindir"/rpt-codes.debug "$stage/" ;;
+            macOS)   cp -R "$bindir"/rpt.dSYM "$bindir"/rpt-render.dSYM "$bindir"/rpt-codes.dSYM "$stage/" ;;
             Windows) cp "$bindir"/rpt.pdb "$bindir"/rpt_render.pdb "$stage/" 2>/dev/null || cp "$bindir"/*.pdb "$stage/" ;;
           esac
           tar -czf "$name.tar.gz" -C "$stage" .

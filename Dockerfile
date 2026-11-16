@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Multistage build: `rpt` and `rpt-render` linked against glibc + OpenSSL.
+# Multistage build: `rpt`, `rpt-render`, and `rpt-codes` linked against glibc + OpenSSL.
 #
 # The SQL Server driver (`tiberius` / native-tls) needs OpenSSL on Linux. A fully static `scratch`
 # musl image cannot satisfy that without a large vendored-OpenSSL setup; this image ships a small
@@ -22,9 +22,9 @@ COPY . .
 # Cache mounts speed rebuilds; binaries land in /out for the runtime stage.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release -p rpt-cli -p rpt-render-cli \
+    cargo build --release -p rpt-cli -p rpt-render-cli -p rpt-codes-cli \
     && mkdir -p /out \
-    && cp target/release/rpt target/release/rpt-render /out/
+    && cp target/release/rpt target/release/rpt-render target/release/rpt-codes /out/
 
 FROM debian:bookworm-slim AS runtime
 
@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --system --no-create-home --shell /usr/sbin/nologin rpt
 
-COPY --from=builder /out/rpt /out/rpt-render /usr/local/bin/
+COPY --from=builder /out/rpt /out/rpt-render /out/rpt-codes /usr/local/bin/
 
 COPY --from=builder /src/LICENSE /src/THIRD-PARTY-NOTICES.md /usr/local/share/licenses/rpt-rs/
 
