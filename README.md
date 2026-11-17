@@ -79,6 +79,20 @@ To read rows from a live database instead, pass `--db`; the URL comes from the e
 RPT_DB_URL='postgres://user:pass@host:5432/db' rpt-render report.rpt --db -o out.pdf
 ```
 
+### QR codes from `qr:` field values
+
+When a **field or text object** resolves to a display string that is exactly `qr:` followed by a URL, the layout engine
+draws a **QR code image** in that object's box (one distinct PNG per detail row) instead of printing the literal text.
+This works with reports authored in Crystal Reports: keep the database column as a plain URL and use a formula such as
+`"qr:" + {YourTable.UrlField}`, or expose `'qr:' || url` from SQL.
+
+Sizing follows the **object's bounding box** in twips: the encoder uses `min(width, height)`, converts to millimetres
+(1440 twips = 1 inch), renders at **300 DPI**, and places the PNG with letterboxing inside the box. For a scannable
+code, make the field **square** in the designer. The prefix is case-sensitive (`qr:` only, not `QR:`).
+
+See [docs/rendering/qr-url-prefix.md](docs/rendering/qr-url-prefix.md). For a standalone QR PNG without a report, use
+`rpt-codes` ([docs/tools/codes-cli.md](docs/tools/codes-cli.md)).
+
 ## Library
 
 The same two capabilities as crates — read the typed model, or render one:
