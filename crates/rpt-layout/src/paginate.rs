@@ -237,6 +237,15 @@ impl<'a> Formatter<'a> {
             ),
             _ => return None,
         };
+        if let Some(url) = crate::qr_url::qr_payload_from_display(&raw) {
+            return Some(TextPlan {
+                lines: Vec::new(),
+                color,
+                kind,
+                currency,
+                qr_url: Some(url.to_string()),
+            });
+        }
         // A requested family that can't render some char (e.g. a symbol like ⚠ in an Arial run) is
         // served by the bundled fallback face; record that once so a caller knows the render used a
         // substitute. ASCII always resolves in the Latin faces, so only scan non-ASCII text; the sink
@@ -372,6 +381,7 @@ impl<'a> Formatter<'a> {
             color,
             kind,
             currency,
+            qr_url: None,
         })
     }
 
@@ -672,7 +682,10 @@ impl<'a> Formatter<'a> {
                     plans
                         .get(i)
                         .and_then(Option::as_ref)
-                        .map(|p| p.lines.iter().all(|l| l.text.trim().is_empty()))
+                        .map(|p| {
+                            p.qr_url.is_none()
+                                && p.lines.iter().all(|l| l.text.trim().is_empty())
+                        })
                         .unwrap_or(true)
                 }
                 // Shapes, images, charts, cross-tabs, blobs, and subreports always draw.

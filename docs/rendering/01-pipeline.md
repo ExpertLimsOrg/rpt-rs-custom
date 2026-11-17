@@ -48,6 +48,10 @@ features of the **`rpt-render-cli`** binary, not of the `rpt-render` library, so
 configuration. The `wasm` CI job compiles the WASM-safe crates for `wasm32-unknown-unknown` on every push, so an
 accidental native-dep leak fails CI.
 
+## QR from `qr:` strings
+
+Field and text values that resolve to `qr:` + URL are encoded as per-row QR images during layout (`rpt-codes`). See [qr-url-prefix.md](qr-url-prefix.md).
+
 ---
 
 [Index](README.md) · **Next:** [Driving a render (library API)](02-api.md) →

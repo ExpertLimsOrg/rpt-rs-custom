@@ -263,6 +263,20 @@ impl Formatter<'_> {
             clip_text_to_box,
         };
 
+        if let Some(plan) = plan {
+            if let Some(url) = &plan.qr_url {
+                if matches!(
+                    &obj.kind,
+                    ReportObjectKind::Field(_)
+                        | ReportObjectKind::Text(_)
+                        | ReportObjectKind::FieldHeading(_)
+                ) {
+                    self.emit_qr_url_field(obj, url, &at);
+                    return;
+                }
+            }
+        }
+
         match &obj.kind {
             ReportObjectKind::Field(_)
             | ReportObjectKind::Text(_)
@@ -632,6 +646,57 @@ impl Formatter<'_> {
                 source: at.src(obj, ObjectKind::Image),
             }));
         }
+    }
+
+    /// Place a QR from a `qr:` display string: encode URL to PNG, register per-instance asset, draw.
+    fn emit_qr_url_field(&mut self, obj: &ReportObject, url: &str, at: &Placement) {
+        let rect = self.page_rect(&obj.bounds, at.origin_y);
+        self.push_object_fill(obj, rect, at.section_name, at.instance);
+        let image_id = format!("{}#{}", obj.name, at.instance);
+        let side = crate::qr_url::qr_side_px_from_bounds(
+            obj.bounds.width,
+            obj.bounds.height,
+            crate::qr_url::QR_RENDER_DPI,
+        );
+        match crate::qr_url::try_render_qr_png(url, side) {
+            Ok(bytes) => {
+                self.assets.borrow_mut().insert(
+                    image_id.clone(),
+                    rpt_pages::ImageAsset {
+                        media_type: "image/png".to_string(),
+                        bytes,
+                    },
+                );
+                self.push_op(DrawOp::Image(ImageOp {
+                    bounds: rect,
+                    image_id,
+                    fit: ImageFit::Contain,
+                    source: at.src(obj, ObjectKind::Image),
+                }));
+            }
+            Err(e) => {
+                push_diag(
+                    &self.diagnostics,
+                    Diagnostic::warn(
+                        DiagnosticKind::Other,
+                        format!(
+                            "QR encoding failed for object {:?} (payload {} bytes, {} px): {e}",
+                            obj.name,
+                            url.len(),
+                            side
+                        ),
+                    )
+                    .in_section(at.section_name),
+                );
+                self.push_op(DrawOp::Image(ImageOp {
+                    bounds: rect,
+                    image_id: obj.name.clone(),
+                    fit: ImageFit::Fill,
+                    source: at.src(obj, ObjectKind::Image),
+                }));
+            }
+        }
+        self.push_border(obj, rect, at.section_name, at.instance);
     }
 
     /// Place a blob (database image) field: resolve the bound field from the current row, decode it to

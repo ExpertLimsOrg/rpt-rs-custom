@@ -669,6 +669,7 @@ mod currency;
 mod hierarchical;
 mod objects;
 mod pagination;
+mod qr_url;
 mod specials;
 mod subreports;
 mod text;

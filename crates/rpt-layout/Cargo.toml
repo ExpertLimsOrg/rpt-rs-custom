@@ -18,6 +18,7 @@ rpt-formula = { workspace = true }
 rpt-data = { workspace = true }
 rpt-format-value = { workspace = true }
 rpt-pages = { workspace = true }
+rpt-codes = { workspace = true }
 
 [dev-dependencies]
 rpt-test-support = { workspace = true }

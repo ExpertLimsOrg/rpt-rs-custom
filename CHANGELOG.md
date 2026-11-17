@@ -10,6 +10,7 @@ WIP.
 
 ### Added
 
+- Layout: when a field or text object's resolved value is `qr:` followed by a URL, the engine renders a per-row QR PNG (via `rpt-codes`) instead of literal text. See `docs/rendering/qr-url-prefix.md`.
 - `rpt-codes`, a standalone CLI that writes PNG images for a QR code (URL supplied as standard Base64,
   up to 4096 decoded bytes) or a Code 39 barcode (`--code` + `--value`), sized with `--width-mm` /
   `--height-mm` (QR requires equal width and height). Shipped in release archives, the Docker image,

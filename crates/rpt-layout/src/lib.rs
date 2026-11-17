@@ -34,6 +34,7 @@ mod emf;
 mod format;
 mod paginate;
 mod place;
+mod qr_url;
 mod resolve;
 mod sections;
 mod tabs;
@@ -176,6 +177,8 @@ pub(crate) struct TextPlan {
     /// pure data — a plan that is built and then discarded (a suppressed or blank band) records
     /// nothing, because the fixup is pushed by the emit path, not here.
     pub(crate) currency: Option<resolve::CurrencyMark>,
+    /// When set, emit a QR for this URL instead of [`Self::lines`].
+    pub(crate) qr_url: Option<String>,
 }
 
 /// Lay out a whole report against its dataset, producing the paginated Page IR. Uses the
