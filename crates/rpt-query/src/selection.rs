@@ -45,7 +45,7 @@ pub struct PushDown {
 /// [`push_down_selection_with_params`] for callers with no parameters to bind.
 #[cfg(test)]
 fn push_down_selection(formula: &str, columns: &[QueryColumn]) -> PushDown {
-    push_down_selection_with_params(formula, columns, &[])
+    push_down_selection_with_params(formula, columns, &[], Dialect::Postgres)
 }
 
 /// Like `push_down_selection` but binds parameter current-values (`{?Name}` → its SQL literal),
@@ -56,6 +56,7 @@ pub fn push_down_selection_with_params(
     formula: &str,
     columns: &[QueryColumn],
     params: &[(String, Value)],
+    dialect: Dialect,
 ) -> PushDown {
     if formula.trim().is_empty() {
         return PushDown {
@@ -64,8 +65,8 @@ pub fn push_down_selection_with_params(
             not_pushed: Vec::new(),
         };
     }
-    let lookup = FieldLookup::new(columns);
-    let params = ParamLookup::new(params);
+    let lookup = FieldLookup::new(columns, dialect);
+    let params = ParamLookup::new(params, dialect);
     let (root, _) = parse(formula, Syntax::Crystal);
 
     // Split the top-level `And` chain: each conjunct can be pushed or kept independently.
@@ -74,7 +75,7 @@ pub fn push_down_selection_with_params(
     let mut not_pushed: Vec<String> = Vec::new();
     let mut all = true;
     for c in &conjuncts {
-        match translate(c, &lookup, &params) {
+        match translate(c, &lookup, &params, dialect) {
             Some(sql) => pushed.push(sql),
             None => {
                 all = false;
@@ -117,29 +118,34 @@ fn split_and(node: &Node) -> Vec<&Node> {
 }
 
 /// Translate a boolean expression node to SQL, or `None` if any part is untranslatable.
-fn translate(node: &Node, lookup: &FieldLookup, params: &ParamLookup) -> Option<String> {
+fn translate(
+    node: &Node,
+    lookup: &FieldLookup,
+    params: &ParamLookup,
+    dialect: Dialect,
+) -> Option<String> {
     match &node.kind {
         NodeKind::Binary { op, left, right } => {
             let o = *op;
             if o == op::AND || o == op::OR {
-                let l = translate(left, lookup, params)?;
-                let r = translate(right, lookup, params)?;
+                let l = translate(left, lookup, params, dialect)?;
+                let r = translate(right, lookup, params, dialect)?;
                 let kw = if o == op::AND { "AND" } else { "OR" };
                 Some(format!("({l} {kw} {r})"))
             } else if let Some(cmp) = compare_op(o) {
-                let l = operand(left, lookup, params)?;
-                let r = operand(right, lookup, params)?;
+                let l = operand(left, lookup, params, dialect)?;
+                let r = operand(right, lookup, params, dialect)?;
                 Some(format!("{l} {cmp} {r}"))
             } else if o == op::IN {
-                translate_in(left, right, lookup, params)
+                translate_in(left, right, lookup, params, dialect)
             } else if o == op::LIKE || o == op::STARTS_WITH {
-                translate_like(o, left, right, lookup, params)
+                translate_like(o, left, right, lookup, params, dialect)
             } else {
                 None
             }
         }
         NodeKind::Unary { op, expr } if *op == op::NOT => {
-            let x = translate(expr, lookup, params)?;
+            let x = translate(expr, lookup, params, dialect)?;
             Some(format!("(NOT {x})"))
         }
         // `IsNull({f})` — the only translatable call form.
@@ -158,6 +164,7 @@ fn translate_in(
     right: &Node,
     lookup: &FieldLookup,
     params: &ParamLookup,
+    dialect: Dialect,
 ) -> Option<String> {
     let f = field_sql(left, lookup)?;
     match &right.kind {
@@ -167,7 +174,7 @@ fn translate_in(
             }
             let vals = items
                 .iter()
-                .map(|i| operand(i, lookup, params))
+                .map(|i| operand(i, lookup, params, dialect))
                 .collect::<Option<Vec<_>>>()?;
             Some(format!("{f} IN ({})", vals.join(", ")))
         }
@@ -176,7 +183,7 @@ fn translate_in(
             op: range_op,
             left: lo,
             right: hi,
-        } if is_range_op(*range_op) => translate_range(&f, *range_op, lo, hi, lookup, params),
+        } if is_range_op(*range_op) => translate_range(&f, *range_op, lo, hi, lookup, params, dialect),
         _ => None,
     }
 }
@@ -198,9 +205,10 @@ fn translate_range(
     hi: &Node,
     lookup: &FieldLookup,
     params: &ParamLookup,
+    dialect: Dialect,
 ) -> Option<String> {
-    let lo = operand(lo, lookup, params)?;
-    let hi = operand(hi, lookup, params)?;
+    let lo = operand(lo, lookup, params, dialect)?;
+    let hi = operand(hi, lookup, params, dialect)?;
     if range_op == op::RANGE_TO {
         return Some(format!("{f} BETWEEN {lo} AND {hi}"));
     }
@@ -227,6 +235,7 @@ fn translate_like(
     right: &Node,
     lookup: &FieldLookup,
     _params: &ParamLookup,
+    dialect: Dialect,
 ) -> Option<String> {
     let f = field_sql(left, lookup)?;
     let NodeKind::Str(pat) = &right.kind else {
@@ -238,7 +247,10 @@ fn translate_like(
     } else {
         crystal_like_to_sql(pat)
     };
-    Some(format!("{f} LIKE {} ESCAPE '\\'", sql_string(&sql_pat)))
+    Some(format!(
+        "{f} LIKE {} ESCAPE '\\'",
+        sql_string(&sql_pat, dialect)
+    ))
 }
 
 /// Escape the SQL `LIKE` metacharacters (`\ % _`) in a literal so it matches verbatim (paired with
@@ -276,7 +288,7 @@ fn crystal_like_to_sql(pat: &str) -> String {
 }
 
 /// Translate a comparison operand (a field reference, literal, or bound parameter) to SQL.
-fn operand(node: &Node, lookup: &FieldLookup, params: &ParamLookup) -> Option<String> {
+fn operand(node: &Node, lookup: &FieldLookup, params: &ParamLookup, dialect: Dialect) -> Option<String> {
     match &node.kind {
         NodeKind::Reference {
             kind: RefKind::Field,
@@ -290,9 +302,9 @@ fn operand(node: &Node, lookup: &FieldLookup, params: &ParamLookup) -> Option<St
             // Validate it is a real number literal before trusting it in SQL.
             s.trim().parse::<f64>().ok().map(|_| s.trim().to_string())
         }
-        NodeKind::Str(s) => Some(sql_string(s)),
-        NodeKind::Bool(b) => Some(if *b { "TRUE" } else { "FALSE" }.to_string()),
-        NodeKind::DateLit(s) => date_literal_sql(s),
+        NodeKind::Str(s) => Some(sql_string(s, dialect)),
+        NodeKind::Bool(b) => Some(sql_bool(*b, dialect)),
+        NodeKind::DateLit(s) => date_literal_sql(s, dialect),
         NodeKind::Unary { op: o, expr } if *o == op::UNARY_MINUS => {
             if let NodeKind::Number(s) = &expr.kind {
                 s.trim()
@@ -340,27 +352,42 @@ fn compare_op(o: u8) -> Option<&'static str> {
 /// `AM`/`PM` time tail) can push down. The component-range guard keeps push-down conservative: a
 /// nonsensical value the parser tolerates (e.g. month 13) falls back rather than emitting a literal
 /// the database would reject.
-fn date_literal_sql(raw: &str) -> Option<String> {
+fn date_literal_sql(raw: &str, dialect: Dialect) -> Option<String> {
     match rpt_formula::parse_date_literal(raw).ok()? {
-        Value::Date(d) if date_ymd_in_range(&d) => Some(sql_date_literal(&d)),
+        Value::Date(d) if date_ymd_in_range(&d) => Some(sql_date_literal(&d, dialect)),
         Value::DateTime(d, t) if date_ymd_in_range(&d) && time_hms_in_range(&t) => {
-            Some(sql_timestamp_literal(&d, &t))
+            Some(sql_timestamp_literal(&d, &t, dialect))
         }
         _ => None,
     }
 }
 
-/// A SQL `DATE 'yyyy-mm-dd'` typed literal.
-fn sql_date_literal(d: &Date) -> String {
-    format!("DATE '{:04}-{:02}-{:02}'", d.year, d.month, d.day)
+/// A SQL date typed literal (`DATE '…'` on Postgres; `CAST(N'…' AS date)` on T-SQL).
+fn sql_date_literal(d: &Date, dialect: Dialect) -> String {
+    let iso = format!("{:04}-{:02}-{:02}", d.year, d.month, d.day);
+    match dialect {
+        Dialect::Mssql => format!("CAST(N'{iso}' AS date)"),
+        _ => format!("DATE '{iso}'"),
+    }
 }
 
-/// A SQL `TIMESTAMP 'yyyy-mm-dd hh:mm:ss'` typed literal.
-fn sql_timestamp_literal(d: &Date, t: &Time) -> String {
-    format!(
-        "TIMESTAMP '{:04}-{:02}-{:02} {:02}:{:02}:{:02}'",
+/// A SQL timestamp typed literal.
+fn sql_timestamp_literal(d: &Date, t: &Time, dialect: Dialect) -> String {
+    let iso = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
         d.year, d.month, d.day, t.hour, t.minute, t.second
-    )
+    );
+    match dialect {
+        Dialect::Mssql => format!("CAST(N'{iso}' AS datetime2)"),
+        _ => format!("TIMESTAMP '{iso}'"),
+    }
+}
+
+fn sql_bool(b: bool, dialect: Dialect) -> String {
+    match dialect {
+        Dialect::Mssql => if b { "1" } else { "0" }.to_string(),
+        _ => if b { "TRUE" } else { "FALSE" }.to_string(),
+    }
 }
 
 /// Whether a date's month/day fall in the plausible calendar range. The formula parser tolerates
@@ -377,25 +404,37 @@ fn time_hms_in_range(t: &Time) -> bool {
 }
 
 /// A SQL single-quoted string literal (doubling embedded quotes).
-fn sql_string(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+fn sql_string(s: &str, dialect: Dialect) -> String {
+    let quoted = s.replace('\'', "''");
+    match dialect {
+        Dialect::Mssql => format!("N'{quoted}'"),
+        _ => format!("'{quoted}'"),
+    }
 }
 
 /// The SQL literal form of a bound parameter [`Value`], or `None` for the kinds that have no safe
 /// literal (Null / Array / Range — the pipeline still filters those).
-fn value_to_sql(v: &Value) -> Option<String> {
+fn value_to_sql(v: &Value, dialect: Dialect) -> Option<String> {
     Some(match v {
         Value::Number(n) | Value::Currency(n) => number_literal(*n)?,
-        Value::Str(s) => sql_string(s),
-        Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
-        Value::Date(d) => sql_date_literal(d),
-        Value::Time(t) => format!("TIME '{:02}:{:02}:{:02}'", t.hour, t.minute, t.second),
-        Value::DateTime(d, t) => sql_timestamp_literal(d, t),
+        Value::Str(s) => sql_string(s, dialect),
+        Value::Bool(b) => sql_bool(*b, dialect),
+        Value::Date(d) => sql_date_literal(d, dialect),
+        Value::Time(t) => sql_time_literal(t, dialect),
+        Value::DateTime(d, t) => sql_timestamp_literal(d, t, dialect),
         // A single-element array (a multi-value param collapsed to one) can still bind; anything
         // richer (multi-element arrays, ranges) is left to the pipeline.
-        Value::Array(items) if items.len() == 1 => value_to_sql(&items[0])?,
+        Value::Array(items) if items.len() == 1 => value_to_sql(&items[0], dialect)?,
         _ => return None,
     })
+}
+
+fn sql_time_literal(t: &Time, dialect: Dialect) -> String {
+    let iso = format!("{:02}:{:02}:{:02}", t.hour, t.minute, t.second);
+    match dialect {
+        Dialect::Mssql => format!("CAST(N'{iso}' AS time)"),
+        _ => format!("TIME '{iso}'"),
+    }
 }
 
 /// Format an `f64` parameter value as a SQL numeric literal (integers without a decimal point, so
@@ -421,16 +460,14 @@ struct FieldLookup {
 }
 
 impl FieldLookup {
-    fn new(columns: &[QueryColumn]) -> FieldLookup {
+    fn new(columns: &[QueryColumn], dialect: Dialect) -> FieldLookup {
         let mut by_key = HashMap::new();
         let mut by_field: HashMap<String, Option<String>> = HashMap::new();
         for c in columns {
             if c.expr.is_some() {
                 continue; // SQL Expression column — not a table field reference.
             }
-            // The selection push-down is only ever emitted for Postgres (see `build_query_full`), so
-            // ANSI double-quote identifier quoting is always correct here.
-            let sql = Dialect::Postgres.qualify(&c.alias, &c.field);
+            let sql = dialect.qualify(&c.alias, &c.field);
             by_key.insert(c.key().to_lowercase(), sql.clone());
             by_field
                 .entry(c.field.to_lowercase())
@@ -457,10 +494,10 @@ struct ParamLookup {
 }
 
 impl ParamLookup {
-    fn new(params: &[(String, Value)]) -> ParamLookup {
+    fn new(params: &[(String, Value)], dialect: Dialect) -> ParamLookup {
         let mut by_name = HashMap::new();
         for (name, value) in params {
-            if let Some(sql) = value_to_sql(value) {
+            if let Some(sql) = value_to_sql(value, dialect) {
                 by_name.insert(normalize(name), sql);
             }
         }
@@ -473,9 +510,14 @@ impl ParamLookup {
 }
 
 /// Replace Crystal parameter tokens (`{?Name}`, `{Name}`) in author SQL with SQL literals from
-/// `params`. Unrecognized tokens are left unchanged.
-pub fn substitute_parameter_tokens(sql: &str, params: &[(String, Value)]) -> String {
-    let lookup = ParamLookup::new(params);
+/// `params`, using the same spelling as record-selection push-down for `dialect`. Unrecognized tokens
+/// are left unchanged.
+pub fn substitute_parameter_tokens(
+    sql: &str,
+    params: &[(String, Value)],
+    dialect: Dialect,
+) -> String {
+    let lookup = ParamLookup::new(params, dialect);
     let mut out = String::with_capacity(sql.len());
     let bytes = sql.as_bytes();
     let mut i = 0;
@@ -541,8 +583,15 @@ mod tests {
             Value::Number(42182.0),
         )];
         let sql = "WHERE id = {?Pm-GMMuestras.IdMuestra}";
-        let out = substitute_parameter_tokens(sql, &params);
+        let out = substitute_parameter_tokens(sql, &params, Dialect::Postgres);
         assert_eq!(out, "WHERE id = 42182");
+    }
+
+    #[test]
+    fn substitute_parameter_tokens_mssql_date_uses_tsql_cast() {
+        let params = vec![("D".to_string(), Value::Date(Date::new(2024, 3, 5)))];
+        let out = substitute_parameter_tokens("x = {?D}", &params, Dialect::Mssql);
+        assert_eq!(out, "x = CAST(N'2024-03-05' AS date)");
     }
 
     #[test]
@@ -821,7 +870,12 @@ mod tests {
     #[test]
     fn parameter_value_binds_into_where() {
         let params = vec![("Threshold".to_string(), Value::Number(42.0))];
-        let p = push_down_selection_with_params("{orders.amount} > {?Threshold}", &cols(), &params);
+        let p = push_down_selection_with_params(
+            "{orders.amount} > {?Threshold}",
+            &cols(),
+            &params,
+            Dialect::Postgres,
+        );
         assert_eq!(p.where_sql.as_deref(), Some(r#""orders"."amount" > 42"#));
         assert!(p.fully_pushed);
     }
@@ -829,7 +883,12 @@ mod tests {
     #[test]
     fn string_parameter_binds_quoted() {
         let params = vec![("Stat".to_string(), Value::Str("o'brien".into()))];
-        let p = push_down_selection_with_params("{orders.status} = {?Stat}", &cols(), &params);
+        let p = push_down_selection_with_params(
+            "{orders.status} = {?Stat}",
+            &cols(),
+            &params,
+            Dialect::Postgres,
+        );
         assert_eq!(
             p.where_sql.as_deref(),
             Some(r#""orders"."status" = 'o''brien'"#)
@@ -846,7 +905,12 @@ mod tests {
             expr: None,
         });
         let params = vec![("D".to_string(), Value::Date(Date::new(2024, 3, 5)))];
-        let p = push_down_selection_with_params("{orders.ship_date} >= {?D}", &c, &params);
+        let p = push_down_selection_with_params(
+            "{orders.ship_date} >= {?D}",
+            &c,
+            &params,
+            Dialect::Postgres,
+        );
         assert_eq!(
             p.where_sql.as_deref(),
             Some(r#""orders"."ship_date" >= DATE '2024-03-05'"#)
@@ -857,7 +921,7 @@ mod tests {
     fn time_parameter_binds() {
         // Just exercise value_to_sql for Time (via a param) to confirm the literal shape.
         let params = vec![("T".to_string(), Value::Time(Time::new(0, 0, 0)))];
-        let pl = ParamLookup::new(&params);
+        let pl = ParamLookup::new(&params, Dialect::Postgres);
         assert_eq!(pl.resolve("T").as_deref(), Some("TIME '00:00:00'"));
     }
 
@@ -868,7 +932,7 @@ mod tests {
             "DT".to_string(),
             Value::DateTime(Date::new(2024, 3, 5), Time::new(8, 30, 0)),
         )];
-        let pl = ParamLookup::new(&params);
+        let pl = ParamLookup::new(&params, Dialect::Postgres);
         assert_eq!(
             pl.resolve("DT").as_deref(),
             Some("TIMESTAMP '2024-03-05 08:30:00'")
@@ -878,7 +942,12 @@ mod tests {
     #[test]
     fn missing_parameter_is_not_pushed() {
         // No bound value → the conjunct can't be translated; the pipeline still filters.
-        let p = push_down_selection_with_params("{orders.amount} > {?Unset}", &cols(), &[]);
+        let p = push_down_selection_with_params(
+            "{orders.amount} > {?Unset}",
+            &cols(),
+            &[],
+            Dialect::Postgres,
+        );
         assert_eq!(p.where_sql, None);
         assert!(!p.fully_pushed);
     }
@@ -886,7 +955,12 @@ mod tests {
     #[test]
     fn null_parameter_is_not_pushed() {
         let params = vec![("N".to_string(), Value::Null)];
-        let p = push_down_selection_with_params("{orders.amount} = {?N}", &cols(), &params);
+        let p = push_down_selection_with_params(
+            "{orders.amount} = {?N}",
+            &cols(),
+            &params,
+            Dialect::Postgres,
+        );
         assert_eq!(p.where_sql, None);
     }
 
@@ -902,5 +976,67 @@ mod tests {
         });
         let p = push_down_selection("{orders.amount} > 100", &c);
         assert_eq!(p.where_sql.as_deref(), Some(r#""orders"."amount" > 100"#));
+    }
+
+    // --- T-SQL dialect ---------------------------------------------------------------------------
+
+    fn lims_sample_cols() -> Vec<QueryColumn> {
+        vec![QueryColumn {
+            alias: "GMMuestras".into(),
+            field: "IdMuestra".into(),
+            value_type: FieldValueType::Int32s,
+            expr: None,
+        }]
+    }
+
+    #[test]
+    fn mssql_single_row_filter_uses_brackets() {
+        let p = push_down_selection_with_params(
+            "{GMMuestras.IdMuestra} = 62820",
+            &lims_sample_cols(),
+            &[],
+            Dialect::Mssql,
+        );
+        assert_eq!(
+            p.where_sql.as_deref(),
+            Some("[GMMuestras].[IdMuestra] = 62820")
+        );
+        assert!(p.fully_pushed);
+        assert!(p.not_pushed.is_empty());
+    }
+
+    #[test]
+    fn mssql_string_literal_uses_unicode_prefix() {
+        let p = push_down_selection_with_params(
+            "{orders.status} = \"open\"",
+            &cols(),
+            &[],
+            Dialect::Mssql,
+        );
+        assert_eq!(
+            p.where_sql.as_deref(),
+            Some("[orders].[status] = N'open'")
+        );
+    }
+
+    #[test]
+    fn mssql_date_literal_uses_cast() {
+        let mut c = cols();
+        c.push(QueryColumn {
+            alias: "orders".into(),
+            field: "ship_date".into(),
+            value_type: FieldValueType::Date,
+            expr: None,
+        });
+        let p = push_down_selection_with_params(
+            "{orders.ship_date} >= #2024-01-31#",
+            &c,
+            &[],
+            Dialect::Mssql,
+        );
+        assert_eq!(
+            p.where_sql.as_deref(),
+            Some("[orders].[ship_date] >= CAST(N'2024-01-31' AS date)")
+        );
     }
 }

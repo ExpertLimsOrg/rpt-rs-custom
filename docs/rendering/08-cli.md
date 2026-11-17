@@ -122,10 +122,21 @@ history. The URL **scheme** selects the backend:
 | `mssql://` (or `sqlserver://`)                             | implemented (TLS; optional `?trustServerCertificate=true`) |
 | `mysql://` · `mariadb://`                                  | recognized, not yet implemented |
 
-For a single-server report, set `RPT_DB_URL` (or the 12-factor `DATABASE_URL` fallback; `RPT_DB_URL` takes precedence).
-A report plus its subreports can read from more than one server; each distinct server gets its own
-`RPT_DB_URL_<SERVER>` variable, where `<SERVER>` is the server name upper-cased with non-alphanumerics turned to `_`.
-Run `--list-sources` to print the exact variable name for each source:
+**Microsoft SQL Server URLs**
+
+- Path = database / catalog (`Initial Catalog`), same role as Crystal `UbicarInforme`.
+- Query flags: `trustServerCertificate=true` for self-signed TLS; `instance=SQLEXPRESS` resolves the TCP port via SQL
+  Browser (UDP 1434) when the URL omits an explicit port (Crystal-style `localhost\SQLEXPRESS`). Do not set both a host
+  port and `?instance=` — the URL is rejected. If Browser is blocked, omit `instance=` and set the port:
+  `mssql://user:pass@localhost:49268/dbname`.
+- Example: `mssql://lims:secret@sqlhost/Lims_V3?instance=SQLEXPRESS&trustServerCertificate=true`
+
+Set `RPT_DB_URL` (or the 12-factor `DATABASE_URL` fallback; `RPT_DB_URL` takes precedence) to supply one live
+catalog for every server — the same override Crystal applies with `SetConnection` on main and subreports.
+A report plus its subreports can read from more than one **named** server; each distinct server also accepts its own
+`RPT_DB_URL_<SERVER>` variable (where `<SERVER>` is the server name upper-cased with non-alphanumerics turned to `_`).
+A server-specific URL wins when set; otherwise `RPT_DB_URL` is used. Run `--list-sources` to print the variable name
+for each source:
 
 ```sh
 # Discover what --db needs for this report

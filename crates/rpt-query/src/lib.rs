@@ -12,7 +12,8 @@
 //!
 //! Dialects: Postgres / SQLite / MySQL via sea-query's per-dialect builders; Microsoft SQL Server is
 //! emitted by the hand-rolled [`build_sql_raw`] path (casts to `nvarchar(max)`, bracket identifiers)
-//! because sea-query 0.32 does not ship an MSSQL backend. Author-written
+//! because sea-query 0.32 does not ship an MSSQL backend. Record-selection push-down is implemented for
+//! Postgres and MSSQL (same translatable subset; T-SQL identifier and literal spelling on MSSQL). Author-written
 //! command tables (Crystal SQL Commands) are passed through **verbatim** and cannot be expressed as
 //! a structured sea-query source, so a report containing one is rendered by the hand-rolled string
 //! path instead; fully-structured reports use sea-query.
@@ -151,8 +152,8 @@ pub enum Dialect {
     /// MySQL/MariaDB (`CAST(x AS CHAR)` casts, `` `…` `` quoting).
     Mysql,
     /// Microsoft SQL Server (`CAST(x AS nvarchar(max))`, `[…]` bracket quoting). The builder uses the
-    /// hand-rolled SQL path for every report (structured and command-table); record-selection predicates
-    /// are not pushed to `WHERE` (same trade-off as SQLite).
+    /// hand-rolled SQL path for every report (structured and command-table); record-selection push-down
+    /// uses the same translator as Postgres with T-SQL identifier and literal spelling.
     Mssql,
 }
 
@@ -303,21 +304,17 @@ pub fn build_query_full(
         });
     }
 
-    // The push-down predicate SQL is Postgres-flavoured; other dialects fetch the full table and let
-    // the pipeline apply the selection formula per row (identical result set, just more rows fetched).
-    // A predicate that cannot be translated is applied locally after the fetch — correct, but it means
-    // the query returns more rows than the report shows. Carried on the result so a caller can say so
-    // without the user having to re-run under `-v`.
+    // Dialects with a predicate translator push the translatable subset into `WHERE`; the rest is
+    // applied per row after the fetch (correct, but more rows fetched). Carried on the result so a
+    // caller can report what was not pushed without the user re-running under `-v`.
     let mut not_pushed: Vec<String> = Vec::new();
-    let where_sql: Option<String> = if dialect == Dialect::Postgres {
+    let where_sql: Option<String> = if matches!(dialect, Dialect::Postgres | Dialect::Mssql) {
         selection.and_then(|formula| {
-            let pushed = push_down_selection_with_params(formula, &columns, params);
+            let pushed = push_down_selection_with_params(formula, &columns, params, dialect);
             not_pushed = pushed.not_pushed.clone();
             pushed.where_sql
         })
     } else {
-        // Only the Postgres path translates predicates, so on any other dialect the whole selection
-        // is applied locally.
         not_pushed = selection
             .filter(|f| !f.trim().is_empty())
             .map(|f| vec![f.to_string()])
@@ -365,7 +362,7 @@ pub fn build_query_full(
 /// cartesian. A report that references no attributable field falls back to the full database.
 ///
 /// `sql_exprs` / `selection` / `params` behave exactly as in [`build_query_full`] — SQL Expression
-/// fields are always projected, and the selection push-down (Postgres) sees the pruned columns.
+/// fields are always projected, and the selection push-down sees the pruned columns.
 ///
 /// # Errors
 ///
@@ -837,7 +834,7 @@ fn join_clause(
 fn from_source(table: &Table, dialect: Dialect, params: &[(String, Value)]) -> String {
     match &table.command_text {
         Some(cmd) if !cmd.trim().is_empty() => {
-            let cmd = substitute_parameter_tokens(cmd, params);
+            let cmd = substitute_parameter_tokens(cmd, params, dialect);
             format!("({cmd}) AS {}", dialect.quote_ident(&table.alias))
         }
         _ => format!(
@@ -1318,6 +1315,75 @@ mod tests {
             "{}",
             q2.sql
         );
+    }
+
+    #[test]
+    fn mssql_partial_push_reports_untranslated_conjunct() {
+        let db = Database {
+            tables: vec![table("orders", &[("amount", FieldValueType::Number)])],
+            ..Default::default()
+        };
+        let q = build_query_full(
+            &db,
+            &[],
+            Some("{orders.amount} > 0 And {@custom} = 1"),
+            &[],
+            Dialect::Mssql,
+        )
+        .unwrap();
+        assert!(
+            q.sql.contains("WHERE [orders].[amount] > 0"),
+            "{}",
+            q.sql
+        );
+        assert!(!q.not_pushed.is_empty());
+        assert!(
+            q.not_pushed.iter().any(|s| s.contains("@custom")),
+            "{:?}",
+            q.not_pushed
+        );
+    }
+
+    #[test]
+    fn mssql_command_table_inlines_tsql_parameter_literals() {
+        let mut db = Database::default();
+        let mut t = table("cmd", &[("v", FieldValueType::Int32s)]);
+        t.command_text = Some("SELECT 1 AS id WHERE d = {?D}".into());
+        db.tables = vec![t];
+        let params = vec![("D".to_string(), rpt_formula::eval::Value::Date(
+            rpt_formula::eval::Date::new(2024, 1, 15),
+        ))];
+        let q = build_query_full(&db, &[], None, &params, Dialect::Mssql).unwrap();
+        assert!(
+            q.sql.contains("CAST(N'2024-01-15' AS date)"),
+            "{}",
+            q.sql
+        );
+    }
+
+    #[test]
+    fn mssql_selection_reaches_where_in_generated_sql() {
+        let db = Database {
+            tables: vec![table(
+                "GMMuestras",
+                &[("IdMuestra", FieldValueType::Int32s)],
+            )],
+            ..Default::default()
+        };
+        let q = build_query_full(
+            &db,
+            &[],
+            Some("{GMMuestras.IdMuestra} = 62820"),
+            &[],
+            Dialect::Mssql,
+        )
+        .unwrap();
+        assert!(
+            q.sql.contains("WHERE [GMMuestras].[IdMuestra] = 62820"),
+            "{}",
+            q.sql
+        );
+        assert!(q.not_pushed.is_empty());
     }
 
     #[test]

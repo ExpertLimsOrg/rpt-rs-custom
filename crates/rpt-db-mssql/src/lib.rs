@@ -3,8 +3,8 @@
 //! The native live-data path over TDS ([`tiberius`]): given a report's decoded database schema and a
 //! connection URL (`mssql://` / `sqlserver://`), it generates SQL via [`rpt_query`] with
 //! [`Dialect::Mssql`], executes it, and returns a [`RowSource`] the [`rpt_data`] pipeline consumes
-//! like the Postgres and SQLite drivers. Record-selection formulas are **not** pushed into `WHERE`
-//! (same trade-off as SQLite); the pipeline applies them per row.
+//! like the Postgres and SQLite drivers. The translatable subset of record-selection formulas is
+//! pushed into `WHERE` (same rules as Postgres); the rest is applied per row in the pipeline.
 //!
 //! SQL generation is pure ([`rpt_query`]); this crate only parses the URL, connects (TLS via the
 //! `native-tls` feature on [`tiberius`]), runs the string, and re-types cells. Text columns use
@@ -19,6 +19,8 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 use tiberius::{AuthMethod, Client, Config};
 use percent_encoding::percent_decode_str;
 use url::Url;
+
+mod browser;
 
 /// A failure on the SQL Server path — the shared [`rpt_data::DbError`] with the driver's error type.
 pub type DbError = rpt_data::DbError<MssqlError>;
@@ -80,7 +82,7 @@ fn parse_mssql_url(raw: &str) -> Result<ParsedUrl, String> {
         .host_str()
         .ok_or_else(|| "URL missing host".to_string())?
         .to_string();
-    let port = u.port().unwrap_or(1433);
+    let explicit_port = u.port();
     let database = u.path().trim_start_matches('/').to_string();
     if database.is_empty() {
         return Err(
@@ -97,13 +99,32 @@ fn parse_mssql_url(raw: &str) -> Result<ParsedUrl, String> {
         .map(|p| percent_decode_str(p).decode_utf8_lossy().into_owned())
         .unwrap_or_default();
     let mut trust_server_certificate = false;
+    let mut instance: Option<String> = None;
     for (k, v) in u.query_pairs() {
         if k.eq_ignore_ascii_case("trustservercertificate")
             || k.eq_ignore_ascii_case("trust_server_certificate")
         {
             trust_server_certificate = matches!(v.as_ref(), "true" | "True" | "1" | "yes" | "on");
+        } else if k.eq_ignore_ascii_case("instance") {
+            instance = Some(v.into_owned());
         }
     }
+    if explicit_port.is_some()
+        && instance
+            .as_deref()
+            .is_some_and(|i| !i.trim().is_empty())
+    {
+        return Err(
+            "mssql URL: do not combine an explicit host port with ?instance= — remove the port \
+             and let SQL Browser resolve it, or remove ?instance= and set the instance's TCP port"
+                .into(),
+        );
+    }
+    let port = match (explicit_port, instance.as_deref()) {
+        (Some(p), _) => p,
+        (None, Some(inst)) => browser::resolve_tcp_port(&host, inst)?,
+        (None, None) => 1433,
+    };
     Ok(ParsedUrl {
         host,
         port,
@@ -368,5 +389,18 @@ mod tests {
     fn parse_trust_cert_query_flag() {
         let p = parse_mssql_url("sqlserver://u:p@h/db?trustServerCertificate=true").unwrap();
         assert!(p.trust_server_certificate);
+    }
+
+    #[test]
+    fn explicit_port_and_instance_query_is_rejected() {
+        let err =
+            parse_mssql_url("mssql://u:p@localhost:49268/db?instance=SQLEXPRESS").unwrap_err();
+        assert!(err.contains("explicit host port"), "{err}");
+    }
+
+    #[test]
+    fn empty_instance_in_query_is_rejected() {
+        let err = parse_mssql_url("mssql://u:p@h/db?instance=").unwrap_err();
+        assert!(err.contains("empty"), "{err}");
     }
 }

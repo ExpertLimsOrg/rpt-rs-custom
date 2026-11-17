@@ -5,8 +5,9 @@
 //! A report is not single-connection: every [`Table`](rpt_reader::model::Table) carries its own [`ConnectionInfo`], and
 //! subreports are full nested reports with their own tables. Each report *scope* (main + each
 //! subreport) uses one server, so connections are keyed by SERVER: one connection URL per distinct
-//! server, in `RPT_DB_URL_<SERVER>` (or the generic `RPT_DB_URL`/`DATABASE_URL` for a single-server
-//! report). [`Resolver::build`] resolves and validates every server up front — naming the exact
+//! server, in `RPT_DB_URL_<SERVER>`, falling back to the generic `RPT_DB_URL`/`DATABASE_URL` when a
+//! server-specific variable is unset (same override pattern as Crystal `SetConnection` on main and
+//! subreports). [`Resolver::build`] resolves and validates every server up front — naming the exact
 //! variables to set if any are missing — before a render begins. At render time the main scope is
 //! fetched directly and each subreport scope through [`LiveScopeData`].
 //!
@@ -303,16 +304,14 @@ pub struct Resolver {
 #[cfg(feature = "db")]
 impl Resolver {
     /// Resolve every credential-needing server the report uses to a connection URL from the
-    /// environment (`RPT_DB_URL_<SERVER>`; the generic `RPT_DB_URL`/`DATABASE_URL` is also accepted
-    /// when the report uses exactly one server). Errors — before any render — naming the exact
-    /// variables to set when any are missing.
+    /// environment (`RPT_DB_URL_<SERVER>` first, then `RPT_DB_URL` / `DATABASE_URL`). Errors —
+    /// before any render — naming the exact variables to set when any server still has no URL.
     pub fn build(report: &Report) -> Result<Resolver, RenderError> {
         let needing = credential_sources(&enumerate(report));
-        let allow_global = needing.len() == 1;
         let mut by_server = std::collections::HashMap::new();
         let mut missing = Vec::new();
         for s in &needing {
-            match env_url_for(s, allow_global)? {
+            match env_url_for(s)? {
                 Some(entry) => {
                     by_server.insert(s.group_id(), entry);
                 }
@@ -320,10 +319,7 @@ impl Resolver {
             }
         }
         if !missing.is_empty() {
-            return Err(RenderError::Datasource(missing_urls_error(
-                &missing,
-                allow_global,
-            )));
+            return Err(RenderError::Datasource(missing_urls_error(&missing)));
         }
         Ok(Resolver { by_server })
     }
@@ -331,20 +327,20 @@ impl Resolver {
     fn get(&self, server_key: &str) -> Option<&(Driver, String)> {
         self.by_server.get(server_key)
     }
+
+    #[cfg(test)]
+    fn url_for_group(&self, group_id: &str) -> Option<&str> {
+        self.by_server.get(group_id).map(|(_, u)| u.as_str())
+    }
 }
 
-/// Look up one source's connection URL: its server-keyed variable, or (single-server reports only)
-/// the generic `RPT_DB_URL`/`DATABASE_URL`. Returns the parsed driver + URL, `None` if unset. Errors
-/// only on a malformed URL/scheme.
+/// Look up one source's connection URL: its server-keyed variable first, then the generic
+/// `RPT_DB_URL`/`DATABASE_URL`. Returns the parsed driver + URL, `None` if unset. Errors only on a
+/// malformed URL/scheme.
 #[cfg(feature = "db")]
-fn env_url_for(
-    source: &DataSource,
-    allow_global: bool,
-) -> Result<Option<(Driver, String)>, RenderError> {
+fn env_url_for(source: &DataSource) -> Result<Option<(Driver, String)>, RenderError> {
     let mut keys = vec![source.env_var()];
-    if allow_global {
-        keys.extend(DB_URL_VARS.iter().map(|s| s.to_string()));
-    }
+    keys.extend(DB_URL_VARS.iter().map(|s| s.to_string()));
     for key in keys {
         if let Ok(url) = std::env::var(&key) {
             let url = url.trim();
@@ -360,7 +356,7 @@ fn env_url_for(
 /// The up-front, pre-render error naming the exact environment variable to set for each unresolved
 /// server — so the required setup is unambiguous, never guessed.
 #[cfg(feature = "db")]
-fn missing_urls_error(missing: &[DataSource], allow_global: bool) -> String {
+fn missing_urls_error(missing: &[DataSource]) -> String {
     let mut msg = format!(
         "missing a database connection URL for {} data source(s). Set each in the environment \
          (the URL scheme selects the backend):\n",
@@ -373,11 +369,9 @@ fn missing_urls_error(missing: &[DataSource], allow_global: bool) -> String {
             s.env_var()
         ));
     }
-    if allow_global {
-        msg.push_str(
-            "(this single-source report also accepts the generic RPT_DB_URL / DATABASE_URL.)\n",
-        );
-    }
+    msg.push_str(
+        "(when a server-specific variable is unset, RPT_DB_URL / DATABASE_URL is used for that server.)\n",
+    );
     msg.push_str("Run `rpt-render <file> --list-sources` to see this list.");
     msg
 }
@@ -855,6 +849,11 @@ impl rpt_data::ScopeData for LiveScopeData<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate process environment variables.
+    #[cfg(feature = "db")]
+    static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn conn(server: &str, db: &str, ty: &str) -> ConnectionInfo {
         ConnectionInfo {
@@ -968,9 +967,8 @@ mod tests {
     }
 
     /// Every driver hands the query builder the whole [`FetchInputs`] bundle and lets the dialect
-    /// decide what it can use. For a dialect with no predicate translator that must change only the
-    /// not-pushed report, never the SQL — otherwise passing the selection would silently alter the
-    /// rows a non-Postgres fetch returns.
+    /// decide what it can use. Dialects without push-down (e.g. SQLite) must change only `not_pushed`,
+    /// never the SQL — otherwise passing the selection would silently alter the fetched row set.
     #[cfg(feature = "db")]
     #[test]
     fn a_dialect_without_push_down_reports_the_selection_without_changing_the_sql() {
@@ -1007,6 +1005,82 @@ mod tests {
             vec!["{countries.id} > 1".to_string()],
             "the whole selection is applied locally, and the log must be able to say so"
         );
+    }
+
+    #[cfg(feature = "db")]
+    fn restore_env(keys: &[&str]) {
+        for k in keys {
+            std::env::remove_var(k);
+        }
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn per_server_url_wins_over_global() {
+        let _lock = ENV_TEST_LOCK.lock().unwrap();
+        let src = credential_sources(&enumerate(&report_with(&[conn(
+            "Sales DB",
+            "sales",
+            "ODBC (RDO)",
+        )])))[0]
+        .clone();
+        let keys = ["RPT_DB_URL_SALES_DB", "RPT_DB_URL", "DATABASE_URL"];
+        let saved: Vec<_> = keys.iter().map(|k| (*k, std::env::var(k).ok())).collect();
+        std::env::set_var(
+            "RPT_DB_URL_SALES_DB",
+            "postgres://specific@h:5432/sales",
+        );
+        std::env::set_var("RPT_DB_URL", "postgres://global@h:5432/sales");
+        let got = env_url_for(&src).unwrap().expect("url");
+        assert_eq!(got.1, "postgres://specific@h:5432/sales");
+        for (k, v) in saved {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+
+    #[cfg(feature = "db")]
+    #[test]
+    fn global_url_used_when_per_server_unset() {
+        let _lock = ENV_TEST_LOCK.lock().unwrap();
+        let sources = credential_sources(&enumerate(&report_with(&[
+            conn("db1", "app", "PostgreSQL"),
+            conn("db2", "app", "PostgreSQL"),
+        ])));
+        let keys = [
+            "RPT_DB_URL_DB1",
+            "RPT_DB_URL_DB2",
+            "RPT_DB_URL",
+            "DATABASE_URL",
+        ];
+        let saved: Vec<_> = keys.iter().map(|k| (*k, std::env::var(k).ok())).collect();
+        restore_env(&keys);
+        std::env::set_var("RPT_DB_URL", "postgres://shared@h:5432/lims");
+        for s in &sources {
+            let got = env_url_for(s).unwrap().expect("fallback url");
+            assert_eq!(got.1, "postgres://shared@h:5432/lims");
+        }
+        let resolver = Resolver::build(&report_with(&[
+            conn("db1", "app", "PostgreSQL"),
+            conn("db2", "app", "PostgreSQL"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            resolver.url_for_group("db1"),
+            Some("postgres://shared@h:5432/lims")
+        );
+        assert_eq!(
+            resolver.url_for_group("db2"),
+            Some("postgres://shared@h:5432/lims")
+        );
+        for (k, v) in saved {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
     }
 
     #[cfg(feature = "db")]

@@ -43,13 +43,13 @@
 //! - `postgres://` (or `postgresql://`) — implemented.
 //! - `sqlite:///path/to/file.db` (or `sqlite::memory:`) — implemented.
 //! - `mysql://`, `mariadb://` — recognized but not yet implemented.
-//! - `mssql://` / `sqlserver://` — implemented (native TDS; TLS; add `?trustServerCertificate=true` for
-//!   self-signed certs).
+//! - `mssql://` / `sqlserver://` — implemented (native TDS; TLS; `?trustServerCertificate=true` for
+//!   self-signed certs; `?instance=NAME` resolves the port via SQL Browser when the URL has no port).
 //!
-//! A single-server report reads `RPT_DB_URL`, falling back to `DATABASE_URL`. A report that spans
-//! multiple servers (via subreports) needs one URL per distinct server in `RPT_DB_URL_<SERVER>`,
-//! where `<SERVER>` is the server name upper-cased with non-alphanumerics turned to `_`. Run
-//! `--list-sources` to print the exact variable names for a report. (See [`datasource`].)
+//! Every server reads `RPT_DB_URL_<SERVER>` first, then falls back to `RPT_DB_URL` / `DATABASE_URL`
+//! when the server-specific variable is unset — so one URL can override all servers like Crystal
+//! `SetConnection`. `<SERVER>` is the server name upper-cased with non-alphanumerics turned to `_`.
+//! Run `--list-sources` to print the exact variable names for a report. (See [`datasource`].)
 //!
 //! ## Locale resolution
 //! Precedence: an explicit `--locale` overrides the host OS locale (`LC_ALL`/`LC_NUMERIC`/`LANG`),
@@ -310,7 +310,9 @@ DATABASE CONFIGURATION (--db):
               hr-db/hr [ODBC (RDO)] (3 tables)
                 export RPT_DB_URL_HR_DB='postgres://user:pass@host:5432/dbname'
 
-        A single-server report also accepts the generic RPT_DB_URL / DATABASE_URL shown above.
+        When every server should use the same live catalog (as Crystal SetConnection does), set only
+        RPT_DB_URL / DATABASE_URL instead of each RPT_DB_URL_<SERVER>. A server-specific variable
+        still wins when it is set.
 
     SECURITY:
         The connection URL — including any password — is read ONLY from the environment, never from
@@ -1271,9 +1273,9 @@ fn list_sources(input: &str, report: &rpt_reader::model::Report) -> Result<(), R
             s.env_var()
         );
     }
-    if sources.len() == 1 {
-        println!("\n(a single-source report also accepts the generic RPT_DB_URL / DATABASE_URL.)");
-    }
+    println!(
+        "\n(When RPT_DB_URL_<SERVER> is unset for a server, RPT_DB_URL / DATABASE_URL is used for it.)"
+    );
     println!("\nThen render with:  rpt-render {input} --db -o out.pdf");
     Ok(())
 }

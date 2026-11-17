@@ -10,6 +10,10 @@ WIP.
 
 ### Added
 
+- `rpt-query` / `rpt-db-mssql`: record-selection push-down to T-SQL `WHERE` (same translatable subset as Postgres: field comparisons, `IN`, ranges, `LIKE`, `IsNull`, date literals, bound parameters). Bracket identifiers and T-SQL `CAST`/`N'…'` literals.
+- `rpt-render` `--db`: `RPT_DB_URL` / `DATABASE_URL` fallback when `RPT_DB_URL_<SERVER>` is unset, including multi-server reports (server-specific URL still wins).
+- `rpt-db-mssql`: `?instance=NAME` on `mssql://` / `sqlserver://` URLs resolves the TCP port via SQL Browser (UDP 1434); combining an explicit host port with `?instance=` is rejected.
+- `rpt-query`: Crystal command SQL parameter inlining (`substitute_parameter_tokens`) uses dialect-correct literals on MSSQL (same as selection push-down).
 - Layout: when a field or text object's resolved value is `qr:` followed by a URL, the engine renders a per-row QR PNG (via `rpt-codes`) instead of literal text. See `docs/rendering/qr-url-prefix.md`.
 - `rpt-codes`, a standalone CLI that writes PNG images for a QR code (URL supplied as standard Base64,
   up to 4096 decoded bytes) or a Code 39 barcode (`--code` + `--value`), sized with `--width-mm` /
